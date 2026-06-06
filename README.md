@@ -20,21 +20,21 @@ TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --enab
 ```
 
 The robot is held at its initial pose with PD drives so the B2+R5 does not collapse under gravity.
-The default hold configuration matches the Isaac training/sim2sim contract:
+The default hold pose matches the Isaac training/sim2sim contract, while the arm PD gains default to the latest identified pure-PD fit:
 
 - B2 stance: `[+0.15, +0.67, -1.32]` on FL/RL and `[-0.15, +0.67, -1.32]` on FR/RR
 - R5 arm: `[0.0, 1.0, 0.8, 0.0, 0.0, 0.0]`
 - Physics step: `dt=0.005` / 200 Hz
 - Leg PD: hip/thigh `kp=300,kd=7.5`, calf `kp=500,kd=12.5`
-- Arm PD default: `--arm_gain_profile train`, with `R5a_joint2 kp=128,kd=3` and other arm joints `kp=64,kd=1.5`
+- Arm PD default: `--arm_gain_profile identified`, using `/home/lbz/arx_actuator_identification/arx_id_data/20260605_001412/fit_out/actuator_params_isaac.yaml`
 
-For comparison with the latest sim2real identified R5 gains:
+To compare against the original training high-gain arm profile:
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --enable_cameras --arm_gain_profile identified
+TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --enable_cameras --arm_gain_profile train
 ```
 
-If the arm shakes, first test the default `train` profile without cameras:
+If the arm shakes, first test the default `identified` profile without cameras:
 
 ```bash
 TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --headless --duration 1.0 --no_scene_camera
@@ -77,7 +77,11 @@ The D435i body is now part of the merged robot asset:
 - D435 mesh: `assets/my_B2Arx/meshes/d435.dae`
 - Generated USD: `assets/my_B2Arx/my_b2arx/my_robot.usd`
 
-In the URDF, `d435i_link` is fixed to `R5a_link6` with `xyz="0.06 0 0.07"` and `rpy="0 0.2618 0"`. During USD conversion with fixed-joint merging, the D435i body is merged into `R5a_link6`, so the scene does not spawn a separate `d435i_visual` asset anymore.
+The URDF uses one fixed joint for the wrist camera assembly:
+
+- `d435i_mount`: `R5a_link6` to `d435i_link`
+
+This joint origin is the main manual alignment knob. During USD conversion with fixed-joint merging, the D435i body is merged into `R5a_link6`, so the scene does not spawn a separate `d435i_visual` asset.
 
 Isaac still separates the rendered/simulated RGB-D sensor from the physical-looking camera body. The D435i shell comes from the robot USD, while `d435i_camera` is the actual `CameraCfg`/`PinholeCameraCfg` RGB-D sensor.
 

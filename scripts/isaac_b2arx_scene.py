@@ -21,8 +21,8 @@ parser.add_argument("--save_camera_frames", action="store_true", help="Save D435
 parser.add_argument(
     "--arm_gain_profile",
     choices=("identified", "train"),
-    default="train",
-    help="Arm PD gains. 'train' uses the nominal Isaac training contract; 'identified' uses the latest sim2real arm fit.",
+    default="identified",
+    help="Arm PD gains. 'identified' uses the 2026-06-05 pure-PD fit; 'train' uses the nominal Isaac training contract.",
 )
 parser.add_argument(
     "--viewer_camera",
@@ -83,11 +83,11 @@ R5_HOME_POS = {
 
 D435I_CAMERA_PRIM_PATH = "/World/envs/env_0/Robot/R5a_link6/d435i_camera"
 
-# The merged robot URDF fixes d435i_link to R5a_link6 at xyz=(0.06, 0, 0.07), rpy=(0, 0.2618, 0).
+# The merged robot URDF fixes d435i_link directly to R5a_link6 at xyz=(0.06, 0, 0.10), rpy=(0, 0.523599, 0).
 # The camera sensor is separate from the visible/colliding D435i body in the robot USD.
-D435I_SENSOR_POS = (0.06, 0.0, 0.07)
+D435I_SENSOR_POS = (0.06, 0.0, 0.10)
 # R5a_link6 -> d435i_mount pitch, composed with the camera optical-frame rotation.
-D435I_SENSOR_ROT = (0.430459, -0.56072, 0.56072, -0.430459)
+D435I_SENSOR_ROT = (0.353553, -0.612372, 0.612372, -0.353553)
 
 LEG_HIP_JOINTS = [
     "b2_description_FL_hip_joint",
@@ -113,6 +113,9 @@ ARM_JOINTS = ["R5a_joint1", "R5a_joint2", "R5a_joint3", "R5a_joint4", "R5a_joint
 
 def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
     if args_cli.arm_gain_profile == "identified":
+        # Source:
+        # /home/lbz/arx_actuator_identification/arx_id_data/20260605_001412/fit_out/actuator_params_isaac.yaml
+        # Pure PD fit. delay_steps are recorded in that file but IdealPDActuatorCfg only supports kp/kd/limits.
         arm_actuators = {
             "arm_joint1": IdealPDActuatorCfg(
                 joint_names_expr=["R5a_joint1"],
@@ -120,8 +123,8 @@ def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
                 effort_limit_sim=64.0,
                 velocity_limit=100.0,
                 velocity_limit_sim=100.0,
-                stiffness=21.77025711792814,
-                damping=1.4796119892491184,
+                stiffness=16.002533696088847,
+                damping=0.9653550775562955,
             ),
             "arm_joint2": IdealPDActuatorCfg(
                 joint_names_expr=["R5a_joint2"],
@@ -129,8 +132,8 @@ def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
                 effort_limit_sim=64.0,
                 velocity_limit=100.0,
                 velocity_limit_sim=100.0,
-                stiffness=71.70361100022417,
-                damping=3.2270650072786227,
+                stiffness=26.66343352125888,
+                damping=1.898936300858176,
             ),
             "arm_joint3": IdealPDActuatorCfg(
                 joint_names_expr=["R5a_joint3"],
@@ -138,8 +141,8 @@ def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
                 effort_limit_sim=64.0,
                 velocity_limit=100.0,
                 velocity_limit_sim=100.0,
-                stiffness=22.052716671100256,
-                damping=2.4886573182330824,
+                stiffness=31.72318363299385,
+                damping=2.4018660298707024,
             ),
             "arm_joint4": IdealPDActuatorCfg(
                 joint_names_expr=["R5a_joint4"],
@@ -147,8 +150,8 @@ def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
                 effort_limit_sim=64.0,
                 velocity_limit=100.0,
                 velocity_limit_sim=100.0,
-                stiffness=73.05181805592834,
-                damping=0.4599771468160624,
+                stiffness=5.3742454192848506,
+                damping=0.18449434631628026,
             ),
             "arm_joint5": IdealPDActuatorCfg(
                 joint_names_expr=["R5a_joint5"],
@@ -156,8 +159,8 @@ def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
                 effort_limit_sim=64.0,
                 velocity_limit=100.0,
                 velocity_limit_sim=100.0,
-                stiffness=24.38099336022227,
-                damping=1.313526811365503,
+                stiffness=3.088030381518184,
+                damping=0.14579060361110824,
             ),
             "arm_joint6": IdealPDActuatorCfg(
                 joint_names_expr=["R5a_joint6"],
@@ -165,8 +168,8 @@ def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
                 effort_limit_sim=64.0,
                 velocity_limit=100.0,
                 velocity_limit_sim=100.0,
-                stiffness=4.620884420421472,
-                damping=1.0233798947518407,
+                stiffness=4.858456866357783,
+                damping=0.04160561372766666,
             ),
         }
     else:
@@ -204,7 +207,7 @@ def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
                 max_depenetration_velocity=1.0,
             ),
             articulation_props=ArticulationRootPropertiesCfg(
-                enabled_self_collisions=True,
+                enabled_self_collisions=False,
                 solver_position_iteration_count=8,
                 solver_velocity_iteration_count=4,
             ),

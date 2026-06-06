@@ -1347,7 +1347,7 @@
   <joint name="d435i_mount" type="fixed">
     <parent link="R5a_link6" />
     <child link="d435i_link" />
-    <origin xyz="0.06 0 0.07" rpy="0 0.2618 0" />
+    <origin xyz="0.06 0 0.10" rpy="0 0.523599 0" />
   </joint>
 
   <joint name="R5a_joint7" type="prismatic">
