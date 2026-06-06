@@ -1,0 +1,93 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION (( 'STEP AP203' ),
+    '1' );
+FILE_NAME ('d435Ïà»úÁ¬½Ó30¶Èc.STEP',
+    '2026-06-05T23:38:48',
+    ( '' ),
+    ( '' ),
+    'SwSTEP 2.0',
+    'SolidWorks 2023',
+    '' );
+FILE_SCHEMA (( 'CONFIG_CONTROL_DESIGN' ));
+ENDSEC;
+
+DATA;
+#1 = DATE_TIME_ROLE ( 'creation_date' ) ;
+#2 = APPLICATION_PROTOCOL_DEFINITION ( 'international standard', 'config_control_design', 1994, #62 ) ;
+#3 = COORDINATED_UNIVERSAL_TIME_OFFSET ( 8, 0, .AHEAD. ) ;
+#4 = CC_DESIGN_PERSON_AND_ORGANIZATION_ASSIGNMENT ( #18, #48, ( #12 ) ) ;
+#5 = PERSON_AND_ORGANIZATION ( #13, #9 ) ;
+#6 = CALENDAR_DATE ( 2026, 6, 6 ) ;
+#7 = APPROVAL_ROLE ( '' ) ;
+#8 = CALENDAR_DATE ( 2026, 6, 6 ) ;
+#9 = ORGANIZATION ( 'æœª', 'æœª', '' ) ;
+#10 = APPLICATION_PROTOCOL_DEFINITION ( 'international standard', 'config_control_design', 1994, #29 ) ;
+#11 = DATE_AND_TIME ( #6, #42 ) ;
+#12 = PRODUCT_DEFINITION ( 'æœ', '', #66, #40 ) ;
+#13 = PERSON ( 'æœª', 'æœª', 'æœª', ('æœª'), ('æœª'), ('æœª') ) ;
+#14 = CC_DESIGN_APPROVAL ( #41, ( #31 ) ) ;
+#15 = CC_DESIGN_DATE_AND_TIME_ASSIGNMENT ( #44, #67, ( #31 ) ) ;
+#16 = COORDINATED_UNIVERSAL_TIME_OFFSET ( 8, 0, .AHEAD. ) ;
+#17 = CC_DESIGN_DATE_AND_TIME_ASSIGNMENT ( #59, #1, ( #12 ) ) ;
+#18 = PERSON_AND_ORGANIZATION ( #13, #9 ) ;
+#19 = PRODUCT_RELATED_PRODUCT_CATEGORY ( 'detail', '', ( #72 ) ) ;
+#20 = PERSON_AND_ORGANIZATION_ROLE ( 'design_owner' ) ;
+#21 = PERSON_AND_ORGANIZATION_ROLE ( 'creator' ) ;
+#22 = LOCAL_TIME ( 7, 38, 48.00000000000000000, #37 ) ;
+#23 = PERSON_AND_ORGANIZATION_ROLE ( 'classification_officer' ) ;
+#24 = CC_DESIGN_PERSON_AND_ORGANIZATION_ASSIGNMENT ( #38, #20, ( #72 ) ) ;
+#25 = APPROVAL_ROLE ( '' ) ;
+#26 = PERSON_AND_ORGANIZATION ( #13, #9 ) ;
+#27 = APPROVAL_STATUS ( 'not_yet_approved' ) ;
+#28 = APPROVAL ( #27, 'æœª' ) ;
+#29 = APPLICATION_CONTEXT ( 'configuration controlled 3d designs of mechanical parts and assemblies' ) ;
+#30 = APPROVAL_STATUS ( 'not_yet_approved' ) ;
+#31 = SECURITY_CLASSIFICATION ( '', '', #39 ) ;
+#32 = CC_DESIGN_PERSON_AND_ORGANIZATION_ASSIGNMENT ( #43, #23, ( #31 ) ) ;
+#33 = CALENDAR_DATE ( 2026, 6, 6 ) ;
+#34 = CC_DESIGN_PERSON_AND_ORGANIZATION_ASSIGNMENT ( #50, #49, ( #66 ) ) ;
+#35 = DATE_AND_TIME ( #8, #51 ) ;
+#36 = CC_DESIGN_APPROVAL ( #28, ( #12 ) ) ;
+#37 = COORDINATED_UNIVERSAL_TIME_OFFSET ( 8, 0, .AHEAD. ) ;
+#38 = PERSON_AND_ORGANIZATION ( #13, #9 ) ;
+#39 = SECURITY_CLASSIFICATION_LEVEL ( 'unclassified' ) ;
+#40 = DESIGN_CONTEXT ( 'detailed design', #62, 'design' ) ;
+#41 = APPROVAL ( #30, 'æœª' ) ;
+#42 = LOCAL_TIME ( 7, 38, 48.00000000000000000, #64 ) ;
+#43 = PERSON_AND_ORGANIZATION ( #13, #9 ) ;
+#44 = DATE_AND_TIME ( #55, #73 ) ;
+#45 = LOCAL_TIME ( 7, 38, 48.00000000000000000, #3 ) ;
+#46 = DATE_AND_TIME ( #33, #45 ) ;
+#47 = CC_DESIGN_PERSON_AND_ORGANIZATION_ASSIGNMENT ( #76, #21, ( #66 ) ) ;
+#48 = PERSON_AND_ORGANIZATION_ROLE ( 'creator' ) ;
+#49 = PERSON_AND_ORGANIZATION_ROLE ( 'design_supplier' ) ;
+#50 = PERSON_AND_ORGANIZATION ( #13, #9 ) ;
+#51 = LOCAL_TIME ( 7, 38, 48.00000000000000000, #63 ) ;
+#52 = APPROVAL ( #53, 'æœª' ) ;
+#53 = APPROVAL_STATUS ( 'not_yet_approved' ) ;
+#54 = CC_DESIGN_APPROVAL ( #52, ( #66 ) ) ;
+#55 = CALENDAR_DATE ( 2026, 6, 6 ) ;
+#56 = PRODUCT_DEFINITION_SHAPE ( 'NONE', 'NONE',  #12 ) ;
+#57 = APPROVAL_PERSON_ORGANIZATION ( #58, #28, #25 ) ;
+#58 = PERSON_AND_ORGANIZATION ( #13, #9 ) ;
+#59 = DATE_AND_TIME ( #68, #22 ) ;
+#60 = APPROVAL_DATE_TIME ( #46, #52 ) ;
+#61 = APPROVAL_PERSON_ORGANIZATION ( #26, #52, #7 ) ;
+#62 = APPLICATION_CONTEXT ( 'configuration controlled 3d designs of mechanical parts and assemblies' ) ;
+#63 = COORDINATED_UNIVERSAL_TIME_OFFSET ( 8, 0, .AHEAD. ) ;
+#64 = COORDINATED_UNIVERSAL_TIME_OFFSET ( 8, 0, .AHEAD. ) ;
+#65 = APPROVAL_DATE_TIME ( #11, #41 ) ;
+#66 = PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE ( 'ä»', '', #72, .NOT_KNOWN. ) ;
+#67 = DATE_TIME_ROLE ( 'classification_date' ) ;
+#68 = CALENDAR_DATE ( 2026, 6, 6 ) ;
+#69 = CC_DESIGN_SECURITY_CLASSIFICATION ( #31, ( #66 ) ) ;
+#70 = APPROVAL_DATE_TIME ( #35, #28 ) ;
+#71 = APPROVAL_ROLE ( '' ) ;
+#72 = PRODUCT ( 'd435\X2\76f8673a8fde63a5\X0\30\X2\5ea6\X0\c', 'd435\X2\76f8673a8fde63a5\X0\30\X2\5ea6\X0\c', '', ( #75 ) ) ;
+#73 = LOCAL_TIME ( 7, 38, 48.00000000000000000, #16 ) ;
+#74 = APPROVAL_PERSON_ORGANIZATION ( #5, #41, #71 ) ;
+#75 = MECHANICAL_CONTEXT ( 'NONE', #29, 'mechanical' ) ;
+#76 = PERSON_AND_ORGANIZATION ( #13, #9 ) ;
+ENDSEC;
+END-ISO-10303-21;
