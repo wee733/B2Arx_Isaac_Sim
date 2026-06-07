@@ -1,0 +1,22 @@
+# Runnable deploy config for --control_mode policy. Direct-ArmLoco smoke default.
+policy:
+  run_dir: /home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02
+  # onnx / deploy_yaml: optional overrides; default to run_dir/exported|params layout.
+
+deploy:
+  start_state: ArmLoco        # Passive / FixStand / ArmPreAlign / ArmLoco
+  auto_arm_loco: false
+  ee_sphere: [0.36, 0.56, 0.0]
+  command: [0.0, 0.0, 0.0]    # scripted backend fixed vx/vy/wz
+
+input:
+  backend: scripted           # scripted / keyboard / gamepad
+  keyboard:
+    v_x_sensitivity: 0.8
+    v_y_sensitivity: 0.4
+    omega_z_sensitivity: 1.0
+  gamepad:
+    v_x_sensitivity: 1.0
+    v_y_sensitivity: 1.0
+    omega_z_sensitivity: 1.0
+    dead_zone: 0.01

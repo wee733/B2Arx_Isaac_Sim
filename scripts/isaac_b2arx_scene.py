@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
 from isaaclab.app import AppLauncher
@@ -17,7 +18,33 @@ parser.add_argument("--robot_usd", type=str, default=str(DEFAULT_ROBOT_USD), hel
 parser.add_argument("--duration", type=float, default=0.0, help="Seconds to run. 0 means run until the app closes.")
 parser.add_argument("--no_workspace", action="store_true", help="Do not spawn the table and manipulation objects.")
 parser.add_argument("--no_scene_camera", action="store_true", help="Do not spawn the RGB-D scene camera.")
-parser.add_argument("--save_camera_frames", action="store_true", help="Save D435i RGB/depth frames under outputs/camera.")
+parser.add_argument("--save_camera_frames", action="store_true", help="Save D455 RGB/depth frames under outputs/camera.")
+parser.add_argument(
+    "--control_mode",
+    choices=("hold", "policy"),
+    default="hold",
+    help="hold keeps the current fixed-pose demo; policy runs the sim2sim2real deployment FSM and ONNX policy.",
+)
+DEFAULT_DEPLOY_CONFIG = Path(__file__).resolve().parent / "policy_deploy" / "deploy_config.example.yaml"
+parser.add_argument(
+    "--deploy_config",
+    type=str,
+    default=str(DEFAULT_DEPLOY_CONFIG),
+    help="deploy_config.yaml for --control_mode policy (policy/scene/deploy/input).",
+)
+parser.add_argument("--print_policy_debug", action="store_true", help="Print policy FSM/action/target diagnostics.")
+parser.add_argument(
+    "--scene_asset",
+    choices=("minimal", "grid", "rough_plane", "warehouse", "hospital"),
+    default="minimal",
+    help="Official Isaac background USD to load. 'minimal' keeps the current ground-plane scene.",
+)
+parser.add_argument(
+    "--environment_usd",
+    type=str,
+    default="",
+    help="Custom environment/background USD path or URL. Overrides --scene_asset when set.",
+)
 parser.add_argument(
     "--arm_gain_profile",
     choices=("identified", "train"),
@@ -26,16 +53,33 @@ parser.add_argument(
 )
 parser.add_argument(
     "--viewer_camera",
-    choices=("scene", "d435i"),
+    choices=("scene", "d455", "rgb", "color", "depth", "infra1", "infra2", "left", "right"),
     default="scene",
-    help="Viewport camera to use after startup. Use 'd435i' to look through the wrist RGB-D camera.",
+    help="'d455'/'rgb' are aliases for color; 'left'/'right' are aliases for infra1/infra2.",
+)
+parser.add_argument(
+    "--target_object",
+    choices=("red_box", "blue_cylinder", "green_ball"),
+    default="red_box",
+    help="Workspace object used for EE sphere target debug output.",
+)
+parser.add_argument(
+    "--print_ee_target_debug",
+    action="store_true",
+    help="Print selected object world pose converted to deploy-side EE sphere target.",
+)
+parser.add_argument("--print_d455_debug", action="store_true", help="Print official D455 asset/camera paths.")
+parser.add_argument(
+    "--show_depth_preview",
+    action="store_true",
+    help="Show a live OpenCV pseudo-color preview of scene['d455_depth_camera'].",
 )
 parser.add_argument("--disable_fabric", action="store_true", help="Disable Fabric API and use USD instead.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
 if not args_cli.no_scene_camera and not args_cli.enable_cameras:
-    parser.error("D435i camera is enabled by default. Add --enable_cameras, or use --no_scene_camera.")
+    parser.error("D455 camera is enabled by default. Add --enable_cameras, or use --no_scene_camera.")
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -52,6 +96,22 @@ from isaaclab.sensors import CameraCfg
 from isaaclab.sim import SimulationContext
 from isaaclab.sim.schemas import ArticulationRootPropertiesCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from omni.physx.scripts import utils as physx_utils
+from pxr import PhysxSchema, UsdPhysics
+
+from d455_geometry import (
+    D455_IMAGE_HEIGHT,
+    D455_IMAGE_WIDTH,
+    D455_MOUNT_POS,
+    D455_MOUNT_ROT,
+    D455_OFFICIAL_CAMERA_PRIMS,
+    resolve_d455_usd_path,
+)
+from ee_sphere import target_world_to_sphere
+from policy_deploy.command_sources import make_command_source
+from policy_deploy.deploy_config import load_deploy_config
+from policy_deploy.isaac_controller import B2ArxIsaacPolicyController
 
 
 B2_JOINT_POS = {
@@ -81,13 +141,22 @@ R5_HOME_POS = {
     "R5a_joint8": 0.0,
 }
 
-D435I_CAMERA_PRIM_PATH = "/World/envs/env_0/Robot/R5a_link6/d435i_camera"
-
-# The merged robot URDF fixes d435i_link directly to R5a_link6 at xyz=(0.06, 0, 0.10), rpy=(0, 0.523599, 0).
-# The camera sensor is separate from the visible/colliding D435i body in the robot USD.
-D435I_SENSOR_POS = (0.06, 0.0, 0.10)
-# R5a_link6 -> d435i_mount pitch, composed with the camera optical-frame rotation.
-D435I_SENSOR_ROT = (0.353553, -0.612372, 0.612372, -0.353553)
+D455_ASSET_PRIM_PATH = "/World/envs/env_0/Robot/R5a_link6/D455"
+D455_CAMERA_ROOT_PRIM_PATH = f"{D455_ASSET_PRIM_PATH}/RSD455"
+D455_COLOR_CAMERA_PRIM_PATH = f"{D455_CAMERA_ROOT_PRIM_PATH}/{D455_OFFICIAL_CAMERA_PRIMS['color']}"
+D455_DEPTH_CAMERA_PRIM_PATH = f"{D455_CAMERA_ROOT_PRIM_PATH}/{D455_OFFICIAL_CAMERA_PRIMS['depth']}"
+D455_INFRA1_CAMERA_PRIM_PATH = f"{D455_CAMERA_ROOT_PRIM_PATH}/{D455_OFFICIAL_CAMERA_PRIMS['infra1']}"
+D455_INFRA2_CAMERA_PRIM_PATH = f"{D455_CAMERA_ROOT_PRIM_PATH}/{D455_OFFICIAL_CAMERA_PRIMS['infra2']}"
+D455_CAMERA_PRIM_PATHS = {
+    "d455": D455_COLOR_CAMERA_PRIM_PATH,
+    "rgb": D455_COLOR_CAMERA_PRIM_PATH,
+    "color": D455_COLOR_CAMERA_PRIM_PATH,
+    "depth": D455_DEPTH_CAMERA_PRIM_PATH,
+    "infra1": D455_INFRA1_CAMERA_PRIM_PATH,
+    "infra2": D455_INFRA2_CAMERA_PRIM_PATH,
+    "left": D455_INFRA1_CAMERA_PRIM_PATH,
+    "right": D455_INFRA2_CAMERA_PRIM_PATH,
+}
 
 LEG_HIP_JOINTS = [
     "b2_description_FL_hip_joint",
@@ -109,6 +178,34 @@ LEG_CALF_JOINTS = [
 ]
 
 ARM_JOINTS = ["R5a_joint1", "R5a_joint2", "R5a_joint3", "R5a_joint4", "R5a_joint5", "R5a_joint6"]
+
+
+OFFICIAL_SCENE_ASSETS = {
+    "grid": f"{ISAAC_NUCLEUS_DIR}/Environments/Grid/default_environment.usd",
+    "rough_plane": f"{ISAAC_NUCLEUS_DIR}/Environments/Terrains/rough_plane.usd",
+    "warehouse": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse.usd",
+    "hospital": f"{ISAAC_NUCLEUS_DIR}/Environments/Hospital/hospital.usd",
+}
+
+D455_USD_PATH = resolve_d455_usd_path(ISAAC_NUCLEUS_DIR)
+
+
+def _resolve_usd_path(usd_path: str) -> str:
+    """Resolve local USD paths while leaving Isaac/Nucleus URLs untouched."""
+    if usd_path.startswith(("http://", "https://", "omniverse://")):
+        return usd_path
+    return str(Path(usd_path).expanduser().resolve())
+
+
+def selected_environment_usd() -> str | None:
+    if args_cli.environment_usd:
+        return _resolve_usd_path(args_cli.environment_usd)
+    if args_cli.scene_asset == "minimal":
+        return None
+    return OFFICIAL_SCENE_ASSETS[args_cli.scene_asset]
+
+
+SELECTED_ENVIRONMENT_USD = selected_environment_usd()
 
 
 def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
@@ -262,7 +359,14 @@ def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
 class B2ArxManipulationSceneCfg(InteractiveSceneCfg):
     """B2+ARX R5 scene with a simple manipulation workspace."""
 
-    ground = AssetBaseCfg(prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg())
+    ground = None if SELECTED_ENVIRONMENT_USD else AssetBaseCfg(
+        prim_path="/World/defaultGroundPlane", spawn=sim_utils.GroundPlaneCfg()
+    )
+
+    environment = None if SELECTED_ENVIRONMENT_USD is None else AssetBaseCfg(
+        prim_path="/World/Environment",
+        spawn=sim_utils.UsdFileCfg(usd_path=SELECTED_ENVIRONMENT_USD),
+    )
 
     dome_light = AssetBaseCfg(
         prim_path="/World/Light",
@@ -328,23 +432,46 @@ class B2ArxManipulationSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(1.43, -0.10, 0.50)),
     )
 
-    d435i_camera = None if args_cli.no_scene_camera else CameraCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/R5a_link6/d435i_camera",
+    d455_asset = None if args_cli.no_scene_camera else AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/R5a_link6/D455",
+        spawn=sim_utils.UsdFileCfg(usd_path=D455_USD_PATH),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=tuple(D455_MOUNT_POS), rot=D455_MOUNT_ROT),
+    )
+
+    d455_color_camera = None if args_cli.no_scene_camera else CameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/R5a_link6/D455/RSD455/Camera_OmniVision_OV9782_Color",
         update_period=1.0 / 30.0,
-        height=480,
-        width=640,
-        data_types=["rgb", "distance_to_image_plane"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=1.93,
-            focus_distance=0.6,
-            horizontal_aperture=3.896,
-            clipping_range=(0.05, 10.0),
-        ),
-        offset=CameraCfg.OffsetCfg(
-            pos=D435I_SENSOR_POS,
-            rot=D435I_SENSOR_ROT,
-            convention="ros",
-        ),
+        height=D455_IMAGE_HEIGHT,
+        width=D455_IMAGE_WIDTH,
+        data_types=["rgb"],
+        spawn=None,
+    )
+
+    d455_depth_camera = None if args_cli.no_scene_camera else CameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/R5a_link6/D455/RSD455/Camera_Pseudo_Depth",
+        update_period=1.0 / 30.0,
+        height=D455_IMAGE_HEIGHT,
+        width=D455_IMAGE_WIDTH,
+        data_types=["distance_to_image_plane"],
+        spawn=None,
+    )
+
+    d455_infra1_camera = None if args_cli.no_scene_camera else CameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/R5a_link6/D455/RSD455/Camera_OmniVision_OV9782_Left",
+        update_period=1.0 / 30.0,
+        height=D455_IMAGE_HEIGHT,
+        width=D455_IMAGE_WIDTH,
+        data_types=["rgb"],
+        spawn=None,
+    )
+
+    d455_infra2_camera = None if args_cli.no_scene_camera else CameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/R5a_link6/D455/RSD455/Camera_OmniVision_OV9782_Right",
+        update_period=1.0 / 30.0,
+        height=D455_IMAGE_HEIGHT,
+        width=D455_IMAGE_WIDTH,
+        data_types=["rgb"],
+        spawn=None,
     )
 
 
@@ -376,56 +503,275 @@ def reset_scene(scene: InteractiveScene) -> None:
     scene.reset()
 
 
+def strip_d455_physics_apis() -> None:
+    """Make the mounted D455 a pure visual/sensor payload, not a nested rigid body."""
+    if args_cli.no_scene_camera:
+        return
+    import omni.usd
+
+    stage = omni.usd.get_context().get_stage()
+    removed_rigid_count = 0
+    removed_collider_count = 0
+    disabled_joint_count = 0
+    for env_index in range(args_cli.num_envs):
+        root_path = f"/World/envs/env_{env_index}/Robot/R5a_link6/D455"
+        root_prim = stage.GetPrimAtPath(root_path)
+        if not root_prim.IsValid():
+            continue
+        prims = [root_prim, *list(root_prim.GetAllChildren())]
+        for prim in prims:
+            if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
+                prim.RemoveAPI(PhysxSchema.PhysxArticulationAPI)
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                prim.RemoveAPI(UsdPhysics.RigidBodyAPI)
+                prim.RemoveAPI(PhysxSchema.PhysxRigidBodyAPI)
+                removed_rigid_count += 1
+            if prim.IsA(UsdPhysics.Joint):
+                prim.GetAttribute("physics:jointEnabled").Set(False)
+                disabled_joint_count += 1
+            if prim.HasAPI(UsdPhysics.CollisionAPI) or prim.HasAPI(UsdPhysics.MeshCollisionAPI):
+                physx_utils.removeCollider(prim)
+                removed_collider_count += 1
+    if removed_rigid_count or removed_collider_count or disabled_joint_count:
+        print(
+            "[INFO]: D455 physics APIs stripped: "
+            f"rigid={removed_rigid_count}, collider={removed_collider_count}, joints={disabled_joint_count}",
+            flush=True,
+        )
+
+
 def set_viewport_camera() -> None:
     if args_cli.headless:
         return
     if args_cli.viewer_camera == "scene":
         return
     if args_cli.no_scene_camera:
-        print("[WARN]: --viewer_camera d435i was requested, but the D435i camera is disabled.")
+        print(f"[WARN]: --viewer_camera {args_cli.viewer_camera} was requested, but D455 cameras are disabled.")
         return
     try:
         from omni.kit.viewport.utility import get_active_viewport
 
+        camera_path = D455_CAMERA_PRIM_PATHS[args_cli.viewer_camera]
         viewport = get_active_viewport()
-        viewport.set_active_camera(D435I_CAMERA_PRIM_PATH)
-        print(f"[INFO]: Viewport switched to {D435I_CAMERA_PRIM_PATH}")
+        viewport.set_active_camera(camera_path)
+        print(f"[INFO]: Viewport switched to {camera_path}", flush=True)
+        if args_cli.viewer_camera == "depth":
+            print(
+                "[INFO]: Isaac viewport shows the depth camera's rendered view, not a depth colormap. "
+                "Use --save_camera_frames and open depth_vis_*.png or depth_m_*.npy for depth values.",
+                flush=True,
+            )
     except Exception as exc:
-        print(f"[WARN]: Could not switch viewport to D435i camera: {exc}")
+        print(f"[WARN]: Could not switch viewport to {args_cli.viewer_camera} camera: {exc}", flush=True)
 
 
-def save_d435i_frame(scene: InteractiveScene, count: int) -> None:
-    if args_cli.no_scene_camera or not args_cli.save_camera_frames:
-        return
-
-    camera = scene["d435i_camera"]
-    if "rgb" not in camera.data.output or "distance_to_image_plane" not in camera.data.output:
-        return
-
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
+def _image_rgb_uint8(camera) -> np.ndarray | None:
+    if "rgb" not in camera.data.output:
+        return None
     rgb = camera.data.output["rgb"][0, ..., :3].detach().cpu().numpy()
+    return np.clip(rgb, 0, 255).astype(np.uint8)
+
+
+def _image_gray_uint8(camera) -> np.ndarray | None:
+    rgb = _image_rgb_uint8(camera)
+    if rgb is None:
+        return None
+    gray = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+    return np.clip(gray, 0, 255).astype(np.uint8)
+
+
+def _depth_meters(camera) -> np.ndarray | None:
+    if "distance_to_image_plane" not in camera.data.output:
+        return None
     depth = camera.data.output["distance_to_image_plane"][0].detach().cpu().numpy()
     if depth.ndim == 3:
         depth = depth[..., 0]
+    return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
-    rgb = np.clip(rgb, 0, 255).astype(np.uint8)
-    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+
+def _depth_visualization(depth: np.ndarray | None) -> np.ndarray | None:
+    if depth is None:
+        return None
     depth_vis = depth.copy()
     positive_depth = depth_vis[depth_vis > 0.0]
     if positive_depth.size:
         depth_vis = np.clip(depth_vis, 0.0, np.percentile(positive_depth, 98))
-
-    plt.imsave(OUTPUT_DIR / f"rgb_{count:06d}.png", rgb)
-    plt.imsave(OUTPUT_DIR / f"depth_{count:06d}.png", depth_vis, cmap="turbo")
-    print(f"[INFO]: Saved D435i frames to {OUTPUT_DIR}")
+    return depth_vis
 
 
-def print_arm_diagnostics(robot, hold_joint_pos: torch.Tensor, elapsed: float) -> None:
+def _depth_preview_uint8(depth: np.ndarray | None) -> np.ndarray | None:
+    if depth is None:
+        return None
+    positive_depth = depth[depth > 0.0]
+    if positive_depth.size == 0:
+        return None
+    min_depth = float(np.percentile(positive_depth, 1))
+    max_depth = float(np.percentile(positive_depth, 98))
+    if max_depth <= min_depth:
+        return None
+    normalized = (np.clip(depth, min_depth, max_depth) - min_depth) / (max_depth - min_depth)
+    return np.clip(255.0 * normalized, 0.0, 255.0).astype(np.uint8)
+
+
+def update_depth_preview(scene: InteractiveScene) -> None:
+    if args_cli.no_scene_camera or not args_cli.show_depth_preview:
+        return
+    if args_cli.headless:
+        return
+    try:
+        import cv2
+    except ImportError:
+        if not getattr(update_depth_preview, "_warned_no_cv2", False):
+            print("[WARN]: --show_depth_preview requested, but cv2 is not available.", flush=True)
+            update_depth_preview._warned_no_cv2 = True
+        return
+
+    depth = _depth_meters(scene["d455_depth_camera"])
+    preview = _depth_preview_uint8(depth)
+    if preview is None:
+        return
+    colored = cv2.applyColorMap(preview, cv2.COLORMAP_TURBO)
+    cv2.imshow("D455 depth_vis distance_to_image_plane", colored)
+    cv2.waitKey(1)
+
+
+def save_d455_frame(scene: InteractiveScene, count: int) -> None:
+    if args_cli.no_scene_camera or not args_cli.save_camera_frames:
+        return
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    saved = []
+
+    color = _image_rgb_uint8(scene["d455_color_camera"])
+    if color is not None:
+        path = OUTPUT_DIR / f"color_{count:06d}.png"
+        plt.imsave(path, color)
+        saved.append(path.name)
+
+    for name in ("infra1", "infra2"):
+        gray = _image_gray_uint8(scene[f"d455_{name}_camera"])
+        if gray is None:
+            continue
+        path = OUTPUT_DIR / f"{name}_{count:06d}.png"
+        plt.imsave(path, gray, cmap="gray", vmin=0, vmax=255)
+        saved.append(path.name)
+
+    depth = _depth_meters(scene["d455_depth_camera"])
+    if depth is not None:
+        path = OUTPUT_DIR / f"depth_m_{count:06d}.npy"
+        np.save(path, depth)
+        saved.append(path.name)
+
+    depth_vis = _depth_visualization(depth)
+    if depth_vis is not None:
+        path = OUTPUT_DIR / f"depth_vis_{count:06d}.png"
+        plt.imsave(path, depth_vis, cmap="turbo")
+        saved.append(path.name)
+
+    if saved:
+        print(f"[INFO]: Saved D455 frames to {OUTPUT_DIR}: {', '.join(saved)}", flush=True)
+
+
+def _root_yaw_from_quat_wxyz(quat: torch.Tensor) -> float:
+    w, x, y, z = [float(v) for v in quat]
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def print_ee_target_debug(scene: InteractiveScene, elapsed: float) -> None:
+    if args_cli.no_workspace or not args_cli.print_ee_target_debug:
+        return
+
+    robot = scene["robot"]
+    obj = scene[args_cli.target_object]
+    root_pos = robot.data.root_pos_w[0].detach().cpu().numpy()
+    root_yaw = _root_yaw_from_quat_wxyz(robot.data.root_quat_w[0].detach().cpu())
+    target_world = obj.data.root_pos_w[0].detach().cpu().numpy()
+    debug = target_world_to_sphere(target_world, root_pos, root_yaw)
+    print(
+        "[TARGET]: "
+        f"t={elapsed:.2f}s object={args_cli.target_object} "
+        f"world={np.array2string(debug.target_world, precision=3, suppress_small=True)} "
+        f"center={np.array2string(debug.sphere_center_world, precision=3, suppress_small=True)} "
+        f"local_yaw={np.array2string(debug.local_yaw_frame, precision=3, suppress_small=True)} "
+        f"sphere_raw={np.array2string(debug.sphere_raw, precision=3, suppress_small=True)} "
+        f"sphere_clamped={np.array2string(debug.sphere_clamped, precision=3, suppress_small=True)}",
+        flush=True,
+    )
+
+
+def print_d455_debug() -> None:
+    if args_cli.no_scene_camera or not args_cli.print_d455_debug:
+        return
+
+    print("[D455]: Official Isaac Sim D455 USD asset is mounted under R5a_link6.")
+    print(
+        "[D455]: "
+        f"usd_path={D455_USD_PATH} "
+        f"mount_pos={np.array2string(D455_MOUNT_POS, precision=4, suppress_small=True)} "
+        f"mount_quat_wxyz={np.array2string(np.array(D455_MOUNT_ROT), precision=6, suppress_small=True)}",
+        flush=True,
+    )
+    for stream, prim_name in D455_OFFICIAL_CAMERA_PRIMS.items():
+        print(f"[D455]: {stream:6s} camera prim = {{ENV_NS}}/Robot/R5a_link6/D455/RSD455/{prim_name}", flush=True)
+
+
+def print_d455_camera_world_poses() -> None:
+    """Read-only diagnostic: measure each camera prim's TRUE pose in the live scene.
+
+    This isolates whether depth/infra cameras really sit below color (a real vertical
+    offset in R5a_link6 frame) or only appear lower because the left/right stereo
+    baseline projects diagonally on screen from the default viewport angle.
+    """
+    if args_cli.no_scene_camera or not args_cli.print_d455_debug:
+        return
+    import omni.usd
+    from pxr import Gf, Usd, UsdGeom
+
+    stage = omni.usd.get_context().get_stage()
+    link6_path = "/World/envs/env_0/Robot/R5a_link6"
+    link6_prim = stage.GetPrimAtPath(link6_path)
+    if not link6_prim.IsValid():
+        print(f"[D455_POSE]: R5a_link6 not found at {link6_path}", flush=True)
+        return
+    link6_w = UsdGeom.Xformable(link6_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    link6_w_inv = link6_w.GetInverse()
+
+    world = {}
+    link6 = {}
+    for stream, prim_name in D455_OFFICIAL_CAMERA_PRIMS.items():
+        cam_path = f"/World/envs/env_0/Robot/R5a_link6/D455/RSD455/{prim_name}"
+        prim = stage.GetPrimAtPath(cam_path)
+        if not prim.IsValid():
+            print(f"[D455_POSE]: {stream:6s} prim NOT FOUND at {cam_path}", flush=True)
+            continue
+        cam_w = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        wt = cam_w.ExtractTranslation()
+        world[stream] = np.array([wt[0], wt[1], wt[2]], dtype=np.float64)
+        cam_in_link6 = cam_w * link6_w_inv
+        lt = cam_in_link6.ExtractTranslation()
+        link6[stream] = np.array([lt[0], lt[1], lt[2]], dtype=np.float64)
+
+    if "color" in world:
+        cw, cl = world["color"], link6["color"]
+        print("[D455_POSE]: delta vs COLOR  (dz_link6==vertical in wrist frame; dz_world==vertical on screen)", flush=True)
+        for stream in world:
+            dw = world[stream] - cw
+            dl = link6[stream] - cl
+            print(
+                f"[D455_POSE]: {stream:6s} "
+                f"dz_link6={dl[2]:+.4f}m dy_link6={dl[1]:+.4f}m dx_link6={dl[0]:+.4f}m | "
+                f"dz_world={dw[2]:+.4f}m",
+                flush=True,
+            )
+
+
+def print_arm_diagnostics(robot, target_joint_pos: torch.Tensor, elapsed: float) -> None:
     arm_joint_ids = [robot.joint_names.index(name) for name in ARM_JOINTS]
     arm_pos = robot.data.joint_pos[:, arm_joint_ids]
     arm_vel = robot.data.joint_vel[:, arm_joint_ids]
-    arm_target = hold_joint_pos[:, arm_joint_ids]
+    arm_target = target_joint_pos[:, arm_joint_ids]
     arm_error = arm_pos - arm_target
     arm_torque = robot.data.applied_torque[:, arm_joint_ids]
     print(
@@ -433,8 +779,60 @@ def print_arm_diagnostics(robot, hold_joint_pos: torch.Tensor, elapsed: float) -
         f"t={elapsed:.2f}s "
         f"arm_abs_err_max={arm_error.abs().max().item():.4f}rad "
         f"arm_abs_vel_max={arm_vel.abs().max().item():.4f}rad/s "
-        f"arm_abs_tau_max={arm_torque.abs().max().item():.2f}Nm"
+        f"arm_abs_tau_max={arm_torque.abs().max().item():.2f}Nm",
+        flush=True,
     )
+
+
+def print_policy_diagnostics(controller: B2ArxIsaacPolicyController, elapsed: float) -> None:
+    if not args_cli.print_policy_debug:
+        return
+    raw = controller.last_raw_action
+    target = controller.last_q_target
+    print(
+        "[POLICY]: "
+        f"t={elapsed:.2f}s state={controller.state_name} "
+        f"raw_abs_max={np.max(np.abs(raw)):.4f} "
+        f"target_arm={np.array2string(target[12:18], precision=3, suppress_small=True)} "
+        f"ee_sphere={np.array2string(np.array(controller.command_buffer.get()), precision=3, suppress_small=True)}",
+        flush=True,
+    )
+
+
+def _policy_target_tensor(robot, controller: B2ArxIsaacPolicyController) -> torch.Tensor:
+    target = robot.data.default_joint_pos.clone()
+    controlled_ids = controller.plant.joint_ids
+    target[:, controlled_ids] = torch.as_tensor(controller.last_q_target, dtype=target.dtype, device=target.device).reshape(1, -1)
+    return target
+
+
+def make_policy_controller(robot) -> B2ArxIsaacPolicyController:
+    cfg = load_deploy_config(args_cli.deploy_config)
+    onnx = cfg.policy.resolved_onnx()
+    deploy_yaml = cfg.policy.resolved_deploy_yaml()
+    if not Path(onnx).exists():
+        raise FileNotFoundError(f"Policy ONNX not found: {onnx}")
+    if not Path(deploy_yaml).exists():
+        raise FileNotFoundError(f"Policy deploy.yaml not found: {deploy_yaml}")
+    source = make_command_source(cfg.input, cfg.deploy)
+    controller = B2ArxIsaacPolicyController(
+        robot,
+        deploy_yaml=deploy_yaml,
+        onnx_path=onnx,
+        start_state=cfg.deploy.start_state,
+        command_source=source,
+        ee_sphere=cfg.deploy.ee_sphere,
+        auto_arm_loco=cfg.deploy.auto_arm_loco,
+    )
+    controller.reset()
+    print(
+        "[INFO]: Policy controller loaded: "
+        f"config={args_cli.deploy_config} backend={cfg.input.backend} "
+        f"start_state={cfg.deploy.start_state} auto_arm_loco={cfg.deploy.auto_arm_loco} "
+        f"control_dt={controller.control_dt:.4f}s",
+        flush=True,
+    )
+    return controller
 
 
 def run_simulator(sim: SimulationContext, scene: InteractiveScene) -> None:
@@ -446,31 +844,72 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene) -> None:
     hold_joint_pos = robot.data.default_joint_pos.clone()
     hold_joint_vel = robot.data.default_joint_vel.clone()
     zero_joint_effort = hold_joint_pos.new_zeros(hold_joint_pos.shape)
+    policy_controller = make_policy_controller(robot) if args_cli.control_mode == "policy" else None
     set_viewport_camera()
-    print("[INFO]: B2+ARX R5 manipulation scene is running.")
-    print(f"[INFO]: Arm gain profile: {args_cli.arm_gain_profile}")
-    print("[INFO]: Hold pose: B2 training stance, R5 arm [0.0, 1.0, 0.8, 0.0, 0.0, 0.0]")
-    print("[INFO]: D435i camera is disabled." if args_cli.no_scene_camera else "[INFO]: RGB-D camera entity: scene['d435i_camera']")
+    print("[INFO]: B2+ARX R5 manipulation scene is running.", flush=True)
+    if SELECTED_ENVIRONMENT_USD:
+        print(f"[INFO]: Background environment USD: {SELECTED_ENVIRONMENT_USD}", flush=True)
+    else:
+        print("[INFO]: Background environment: minimal Isaac ground plane.", flush=True)
+    print(f"[INFO]: Control mode: {args_cli.control_mode}", flush=True)
+    print(f"[INFO]: Arm gain profile: {args_cli.arm_gain_profile}", flush=True)
+    if args_cli.control_mode == "hold":
+        print("[INFO]: Hold pose: B2 training stance, R5 arm [0.0, 1.0, 0.8, 0.0, 0.0, 0.0]", flush=True)
+    else:
+        print("[INFO]: Policy mode uses the sim2sim2real deployment FSM: Passive -> FixStand -> ArmPreAlign -> ArmLoco.", flush=True)
+    if args_cli.no_scene_camera:
+        print("[INFO]: D455 cameras are disabled.", flush=True)
+    else:
+        print(
+            "[INFO]: D455 camera entities: "
+            "scene['d455_color_camera'], scene['d455_depth_camera'], "
+            "scene['d455_infra1_camera'], scene['d455_infra2_camera']",
+            flush=True,
+        )
+        print(
+            "[INFO]: Depth data type: scene['d455_depth_camera'].data.output['distance_to_image_plane']",
+            flush=True,
+        )
+        print_d455_debug()
+        print_d455_camera_world_poses()
+        if args_cli.show_depth_preview:
+            if args_cli.headless:
+                print("[WARN]: --show_depth_preview is ignored in --headless mode.", flush=True)
+            else:
+                print("[INFO]: Live depth preview window uses distance_to_image_plane, not viewport RGB.", flush=True)
 
-    while simulation_app.is_running():
-        if args_cli.duration > 0.0 and elapsed >= args_cli.duration:
-            break
-        if count % 200 == 0:
-            print(f"[INFO]: t={elapsed:.2f}s")
-            print_arm_diagnostics(robot, hold_joint_pos, elapsed)
+    try:
+        while simulation_app.is_running():
+            if args_cli.duration > 0.0 and elapsed >= args_cli.duration:
+                break
+            if count % 200 == 0:
+                print(f"[INFO]: t={elapsed:.2f}s", flush=True)
+                target_for_diag = hold_joint_pos if policy_controller is None else _policy_target_tensor(robot, policy_controller)
+                print_arm_diagnostics(robot, target_for_diag, elapsed)
+                if policy_controller is not None:
+                    print_policy_diagnostics(policy_controller, elapsed)
+                print_ee_target_debug(scene, elapsed)
 
-        robot.set_joint_position_target(hold_joint_pos)
-        robot.set_joint_velocity_target(hold_joint_vel)
-        robot.set_joint_effort_target(zero_joint_effort)
+            if policy_controller is None:
+                robot.set_joint_position_target(hold_joint_pos)
+                robot.set_joint_velocity_target(hold_joint_vel)
+                robot.set_joint_effort_target(zero_joint_effort)
+            else:
+                policy_controller.update(sim_dt)
 
-        scene.write_data_to_sim()
-        sim.step()
-        scene.update(sim_dt)
-        if count == 30 or (args_cli.save_camera_frames and count > 0 and count % 300 == 0):
-            save_d435i_frame(scene, count)
+            scene.write_data_to_sim()
+            sim.step()
+            scene.update(sim_dt)
+            update_depth_preview(scene)
+            if count == 30 or (args_cli.save_camera_frames and count > 0 and count % 300 == 0):
+                save_d455_frame(scene, count)
 
-        count += 1
-        elapsed += sim_dt
+            count += 1
+            elapsed += sim_dt
+        print(f"[INFO]: Simulation loop finished at t={elapsed:.3f}s after {count} steps.", flush=True)
+    finally:
+        if policy_controller is not None:
+            policy_controller.close()
 
 
 def main() -> None:
@@ -484,6 +923,7 @@ def main() -> None:
 
     scene_cfg = B2ArxManipulationSceneCfg(num_envs=args_cli.num_envs, env_spacing=args_cli.env_spacing)
     scene = InteractiveScene(scene_cfg)
+    strip_d455_physics_apis()
 
     sim.reset()
     run_simulator(sim, scene)
