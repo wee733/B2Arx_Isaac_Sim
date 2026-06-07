@@ -5,3 +5,12 @@ __pycache__/
 logs/
 outputs/
 *.log
+
+.codegraph/
+.vscode/
+.remember/
+assets/container_storage/
+assets/paper_cup/
+docs/*
+!docs/superpowers/
+asserts.zip
