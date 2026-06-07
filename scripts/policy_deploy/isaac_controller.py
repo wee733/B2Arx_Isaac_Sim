@@ -150,6 +150,10 @@ class B2ArxIsaacPolicyController:
         self.command_buffer = ArmLocoCommandBuffer()
         if ee_sphere is not None:
             self.command_buffer.set(ee_sphere)
+            # ArmLocoState.enter() calls buf.reset_to_init() on every ArmLoco entry,
+            # which would overwrite the configured sphere with the hardcoded INIT.
+            # Pin INIT to the configured sphere so reset restores it, not the default.
+            self.command_buffer.INIT = tuple(self.command_buffer.get())
         self.auto_arm_loco = bool(auto_arm_loco)
         self.arm_sync_tau = float(arm_sync_tau)
         self._control_acc = 0.0
