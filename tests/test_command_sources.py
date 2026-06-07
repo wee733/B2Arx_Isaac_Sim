@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
 from scripts.policy_deploy.command_sources.latch import _CommandLatch
 from scripts.policy_deploy.command_sources.edge import ButtonEdgeFilter
 from scripts.policy_deploy.command_sources.base import ScriptedCommandSource
+from scripts.policy_deploy.command_sources import make_command_source
+from scripts.policy_deploy.deploy_config import DeployConfig
 
 
 def test_latch_set_then_poll_reads_and_clears() -> None:
@@ -71,3 +75,19 @@ def test_scripted_source_is_stale_false_and_close_noop() -> None:
     src = ScriptedCommandSource(command=[0.0, 0.0, 0.0])
     assert src.is_stale() is False
     src.close()  # must not raise
+
+
+def test_factory_scripted_does_not_import_carb() -> None:
+    import sys
+    cfg = DeployConfig.from_dict({"deploy": {"command": [0.1, 0.2, 0.3]},
+                                  "input": {"backend": "scripted"}})
+    src = make_command_source(cfg.input, cfg.deploy)
+    assert isinstance(src, ScriptedCommandSource)
+    assert src.poll().vx == 0.1
+    assert "carb" not in sys.modules  # scripted path must stay carb-free
+
+
+def test_factory_rejects_unknown_backend() -> None:
+    cfg = DeployConfig.from_dict({"input": {"backend": "joystick3000"}})
+    with pytest.raises(ValueError, match="joystick3000"):
+        make_command_source(cfg.input, cfg.deploy)
