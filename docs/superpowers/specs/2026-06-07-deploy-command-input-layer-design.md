@@ -57,7 +57,7 @@ Python `input()`、ROS input 概念混淆;现状只是 docstring 桩,改名零�
 
 | 文件 | 单元 | 职责 | 依赖 | 可测 |
 |---|---|---|---|---|
-| `base.py` | `CommandSource(ABC)` | `poll() -> ArmLocoCommand`; `reset()` | 无 | — |
+| `base.py` | `CommandSource(ABC)` | `poll()->ArmLocoCommand`; `reset()`; `is_stale(now_s=None)->bool`(默认 False); `close()`(默认 no-op) | 无 | — |
 | `base.py` | `ScriptedCommandSource` | 吐固定 vx/vy/wz(配置来) | 无 | 纯 Python |
 | `latch.py` | `_CommandLatch` | 暂存一次性边沿事件,poll 读出后清零 | 无 | 纯 Python |
 | `edge.py` | `ButtonEdgeFilter` | `update(name, value)->bool` 上升沿判定 | 无 | 纯 Python |
@@ -73,10 +73,17 @@ pytest 里 import,只有真正构造键盘/手柄源时才碰 carb。`ScriptedCo
 ## 职责划分要点
 
 - **连续量**(vx/vy/wz):每拍重新读 `Se2*.advance()`,按住持续有效。
-- **离散量**(状态切换、EE 调节):边沿触发,latch 攒着,`poll()` 读完即清零——
-  carb 回调多快触发都不丢、同一控制拍内不重复(去重发生在 poll 清零)。注意:这
-  降低了事件线程与控制拍不同步的问题,但**边沿质量由设备适配层各自保证**(键盘天生
-  干净,手柄靠 `ButtonEdgeFilter`),latch 本身不做阈值/debounce。
+- **离散量**(状态切换、EE 调节):边沿触发,latch 攒着,`poll()` 读完即清零。
+  **同类事件在同一控制拍内合并、不做计数;v1 只保证"至少触发一次"**(状态切换、
+  EE one-shot 都能接受)。边沿质量由设备适配层各自保证(键盘 KEY_PRESS 天生干净,
+  手柄靠 `ButtonEdgeFilter`),latch 本身不做阈值/debounce/计数。
+- **staleness**:`CommandSource.is_stale(now_s)` 默认 `False`;键盘/手柄/scripted 本地
+  源永不 stale。controller 每拍 `stale = source.is_stale()` 传给 `fsm.tick(..., stale=
+  stale)`——`CtrlFSM` 已有该入参(stale 时回 Passive)。这是给未来 ROS2/Thor 网络命令
+  留的 watchdog 口子,本期不实现具体超时逻辑。
+- **资源释放**:`CommandSource.close()` 默认 no-op;`GamepadCommandSource` 在 `close()`
+  里 `unsubscribe_to_gamepad_events` 退订自己那份 carb 订阅(`__del__` 兜底),避免重启
+  场景/退出时残留回调。controller 销毁或场景收尾时调 `source.close()`。
 - **auto_arm_loco** 留在 controller(依赖 FSM 状态 / `_state_elapsed` /
   `ArmPreAlign.ready`),**不进** command source。`ScriptedCommandSource` 只吐固定命令。
 
@@ -101,6 +108,10 @@ pytest 里 import,只有真正构造键盘/手柄源时才碰 carb。`ScriptedCo
 
 `A`=FixStand `LeftThumb`=ArmPreAlign `Y`/`Start`=ArmLoco `B`=Passive
 `X`=EE 切维 `Back`=EE reset;左摇杆=vx/vy,右摇杆=wz,扳机=EE ±(one-shot)。
+
+`GamepadCommandSource` 自持 carb 订阅句柄,`close()` 里 `unsubscribe_to_gamepad_events`
+退订(`__del__` 兜底)。注意同一 gamepad 会有两份 carb 订阅:`Se2Gamepad` 内部一份管
+摇杆轴,本类一份管按钮;carb 支持多订阅者,冒烟时实测确认不打架。
 
 ## 配置接线
 
@@ -161,7 +172,8 @@ CommandSource`;`_command_for_current_state()` 里 `cmd = self.command_source.pol
 
 - `_CommandLatch`:set → poll 读出 → 自动清零;同拍多次 set 只吐一次;poll 后再读为空。
 - `ButtonEdgeFilter`:0→1 触发一次;1→1 不重复;1→0 不触发;低于阈值视作释放。
-- `ScriptedCommandSource`:poll 返回配置的 vx/vy/wz;不掺 auto_arm_loco。
+- `ScriptedCommandSource`:poll 返回配置的 vx/vy/wz;不掺 auto_arm_loco;`is_stale()`
+  恒 False、`close()` 不报错。
 - `make_command_source`:scripted 路由正确且不 import carb;非法 backend 报错。
 - `deploy_config.py`:解析 `input:` 段(backend + 灵敏度),缺省回落默认值。
 - 键盘/手柄源构造依赖 carb,**不进**单测,靠 Isaac 冒烟覆盖。
@@ -169,7 +181,10 @@ CommandSource`;`_command_for_current_state()` 里 `cmd = self.command_source.pol
 ## 冒烟验证(Isaac,headless)
 
 1. **direct ArmLoco**:example 设 `start_state: ArmLoco` + `backend: scripted`,
-   `--duration 0.2`,确认 `state == ArmLoco`、动作有限、循环正常收尾。
+   `--duration 1.05`(诊断每 1.0s 打一次,需跨过首次打印才看得到非零 raw action),
+   确认 `state == ArmLoco`、ONNX 动作有限、循环正常收尾。
+   (若只想验证"加载+进入 ArmLoco+不崩",`--duration 0.2` 即可,但那时 raw action 仍为 0,
+   不能据此判断动作输出。)
 2. **full FSM**:`start_state: Passive` + `auto_arm_loco: true`,`--duration 5.0`
    (FixStand 需 3s),确认最终进 ArmLoco。
 3. **hold 回归**:`--control_mode hold --duration 0.1` 不受影响。
@@ -178,10 +193,14 @@ CommandSource`;`_command_for_current_state()` 里 `cmd = self.command_source.pol
 
 ## 构建顺序
 
+**前置**:工作树非干净(README/assets/scripts/tests 有已存在的修改与未跟踪文件,见
+`git status`)。这些是先前工作的产物,实现时**在当前工作区基础上继续,不回滚**。
+
 1. `command_sources/{base,latch,edge}.py` + 单测(纯逻辑,先 TDD)。
 2. `deploy_config.py` 加 `input:` 段 + 单测。
 3. `command_sources/devices.py` + `__init__.py` 工厂(carb 延迟导入)。
-4. `isaac_controller.py`:`command` → `command_source` 接线。
-5. `isaac_b2arx_scene.py`:CLI 收敛到 `--deploy_config`,改 `make_policy_controller`。
-6. `deploy_config.example.yaml` + README 更新。
+4. `isaac_controller.py`:`command` → `command_source` 接线;每拍传 `stale=source.is_stale()`。
+5. `isaac_b2arx_scene.py`:CLI 收敛到 `--deploy_config`,改 `make_policy_controller`;
+   场景收尾调 `source.close()`。
+6. `deploy_config.example.yaml` + README 更新(同步 smoke 命令)。
 7. 冒烟验证。
