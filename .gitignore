@@ -12,5 +12,4 @@ outputs/
 assets/container_storage/
 assets/paper_cup/
 docs/*
-!docs/superpowers/
 asserts.zip

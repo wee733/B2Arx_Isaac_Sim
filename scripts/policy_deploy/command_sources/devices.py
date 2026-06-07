@@ -6,6 +6,7 @@ from isaaclab.devices.keyboard.se2_keyboard import Se2Keyboard, Se2KeyboardCfg
 from isaaclab.devices.gamepad.se2_gamepad import Se2Gamepad, Se2GamepadCfg
 
 from ..fsm import ArmLocoCommand
+from .base import CommandSource
 from .edge import ButtonEdgeFilter
 from .latch import _CommandLatch
 
@@ -21,7 +22,7 @@ _KEYBOARD_EVENTS = {
 }
 
 
-class KeyboardCommandSource:
+class KeyboardCommandSource(CommandSource):
     """Wraps Se2Keyboard: advance() -> vx/vy/wz; add_callback binds discrete keys."""
 
     def __init__(self, sensitivity: dict) -> None:
@@ -72,7 +73,7 @@ _GAMEPAD_BUTTON_EVENTS = {
 }
 
 
-class GamepadCommandSource:
+class GamepadCommandSource(CommandSource):
     """Wraps Se2Gamepad for velocity; self-subscribes carb for edge-filtered buttons.
 
     Se2Gamepad.add_callback() fires func() with no args, so it cannot read

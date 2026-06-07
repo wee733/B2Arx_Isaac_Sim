@@ -69,7 +69,6 @@ class SceneConfig:
 @dataclass
 class DeploySettings:
     start_state: str = "Passive"
-    arm_gain_profile: str = "identified"
     auto_arm_loco: bool = False
     ee_sphere: list[float] | None = None
     command: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
@@ -80,7 +79,6 @@ class DeploySettings:
         cmd = data.get("command", [0.0, 0.0, 0.0])
         return cls(
             start_state=str(data.get("start_state", "Passive")),
-            arm_gain_profile=str(data.get("arm_gain_profile", "identified")),
             auto_arm_loco=bool(data.get("auto_arm_loco", False)),
             ee_sphere=[float(v) for v in ee] if ee is not None else None,
             command=[float(v) for v in cmd],
