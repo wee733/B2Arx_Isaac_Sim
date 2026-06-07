@@ -1,13 +1,29 @@
 # Runnable deploy config for --control_mode policy. Direct-ArmLoco smoke default.
 policy:
   run_dir: /home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02
-  # onnx / deploy_yaml: optional overrides; default to run_dir/exported|params layout.
+  # Runtime loads ONNX, not the .pt checkpoint. Export the checkpoint first:
+  #   cd /home/lbz/b2arx
+  #   conda activate isaaclab
+  #   /home/lbz/IsaacLab/isaaclab.sh -p scripts/rsl_rl/play_onnx.py \
+  #     --task B2arx-v0 --checkpoint <run_dir>/model_14000.pt --export-deploy --headless
+  #
+  # onnx / deploy_yaml are optional overrides; by default they resolve to:
+  #   run_dir/exported/policy_full.onnx
+  #   run_dir/params/deploy.yaml
+  checkpoint: /home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02/model_14000.pt
+  manifest: /home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02/exported/deploy_manifest.txt
 
 deploy:
   start_state: ArmLoco        # Passive / FixStand / ArmPreAlign / ArmLoco
   auto_arm_loco: false
   ee_sphere: [0.36, 0.56, 0.0]
   command: [0.0, 0.0, 0.0]    # scripted backend fixed vx/vy/wz
+
+scene:
+  # environment_usd overrides the default local Simple_Warehouse. Local path, http(s),
+  # or omniverse:// URL. Leave unset to use the default warehouse; CLI --scene_asset
+  # minimal forces a bare ground plane. robot_usd defaults to the repo robot.
+  # environment_usd: /home/lbz/Documents/isaac-sim-assets-environments-5.1.0/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/full_warehouse.usd
 
 input:
   backend: scripted           # scripted / keyboard / gamepad

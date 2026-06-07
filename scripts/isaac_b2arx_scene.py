@@ -35,9 +35,10 @@ parser.add_argument(
 parser.add_argument("--print_policy_debug", action="store_true", help="Print policy FSM/action/target diagnostics.")
 parser.add_argument(
     "--scene_asset",
-    choices=("minimal", "grid", "rough_plane", "warehouse", "hospital"),
-    default="minimal",
-    help="Official Isaac background USD to load. 'minimal' keeps the current ground-plane scene.",
+    choices=("default", "minimal", "grid", "rough_plane", "warehouse", "warehouse_local", "hospital"),
+    default="default",
+    help="Background USD. 'default' = local Simple_Warehouse; 'minimal' = bare ground plane; "
+    "others are official Nucleus assets. deploy_config scene.environment_usd overrides 'default'.",
 )
 parser.add_argument(
     "--environment_usd",
@@ -78,8 +79,8 @@ parser.add_argument("--disable_fabric", action="store_true", help="Disable Fabri
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
-if not args_cli.no_scene_camera and not args_cli.enable_cameras:
-    parser.error("D455 camera is enabled by default. Add --enable_cameras, or use --no_scene_camera.")
+if not args_cli.no_scene_camera:
+    args_cli.enable_cameras = True
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -98,7 +99,7 @@ from isaaclab.sim.schemas import ArticulationRootPropertiesCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from omni.physx.scripts import utils as physx_utils
-from pxr import PhysxSchema, UsdPhysics
+from pxr import PhysxSchema, Usd, UsdPhysics
 
 from d455_geometry import (
     D455_IMAGE_HEIGHT,
@@ -180,10 +181,16 @@ LEG_CALF_JOINTS = [
 ARM_JOINTS = ["R5a_joint1", "R5a_joint2", "R5a_joint3", "R5a_joint4", "R5a_joint5", "R5a_joint6"]
 
 
+LOCAL_WAREHOUSE_USD = (
+    "/home/lbz/Documents/isaac-sim-assets-environments-5.1.0/"
+    "Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/warehouse.usd"
+)
+
 OFFICIAL_SCENE_ASSETS = {
     "grid": f"{ISAAC_NUCLEUS_DIR}/Environments/Grid/default_environment.usd",
     "rough_plane": f"{ISAAC_NUCLEUS_DIR}/Environments/Terrains/rough_plane.usd",
     "warehouse": f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse.usd",
+    "warehouse_local": LOCAL_WAREHOUSE_USD,
     "hospital": f"{ISAAC_NUCLEUS_DIR}/Environments/Hospital/hospital.usd",
 }
 
@@ -197,11 +204,33 @@ def _resolve_usd_path(usd_path: str) -> str:
     return str(Path(usd_path).expanduser().resolve())
 
 
+# Load the deploy config once at module scope (policy mode only) so the scene cfg,
+# built below, can honor scene.environment_usd. make_policy_controller reuses this.
+DEPLOY_CFG = load_deploy_config(args_cli.deploy_config) if args_cli.control_mode == "policy" else None
+
+
+def _config_environment_usd() -> str | None:
+    """environment_usd from deploy_config.scene, already path/URL resolved by the loader."""
+    if DEPLOY_CFG is None or DEPLOY_CFG.scene.environment_usd is None:
+        return None
+    return str(DEPLOY_CFG.scene.environment_usd)
+
+
 def selected_environment_usd() -> str | None:
+    """Priority: CLI --environment_usd > config scene > CLI --scene_asset > default local warehouse.
+
+    --scene_asset minimal forces the bare ground plane (no background), overriding the
+    warehouse default; use it when isolating robot stability.
+    """
     if args_cli.environment_usd:
         return _resolve_usd_path(args_cli.environment_usd)
     if args_cli.scene_asset == "minimal":
         return None
+    cfg_env = _config_environment_usd()
+    if cfg_env is not None:
+        return cfg_env
+    if args_cli.scene_asset == "default":
+        return _resolve_usd_path(LOCAL_WAREHOUSE_USD)
     return OFFICIAL_SCENE_ASSETS[args_cli.scene_asset]
 
 
@@ -501,6 +530,40 @@ def reset_scene(scene: InteractiveScene) -> None:
         obj.write_root_velocity_to_sim(object_state[:, 7:])
 
     scene.reset()
+
+
+def print_environment_physics_debug() -> None:
+    """Print the loaded environment's physics materials (friction/restitution) and gravity.
+
+    The warehouse floor uses its own USD PhysicsMaterial, not IsaacLab's default ground
+    plane. A low ground friction here is a prime suspect for FixStand/ArmPreAlign tilt.
+    """
+    if SELECTED_ENVIRONMENT_USD is None:
+        return
+    import omni.usd
+
+    stage = omni.usd.get_context().get_stage()
+    env_root = stage.GetPrimAtPath("/World/Environment")
+    if not env_root.IsValid():
+        return
+    found = 0
+    for prim in Usd.PrimRange(env_root):
+        if prim.HasAPI(UsdPhysics.MaterialAPI) or prim.GetTypeName() == "PhysicsMaterial":
+            mat = UsdPhysics.MaterialAPI(prim)
+            sf = mat.GetStaticFrictionAttr().Get()
+            df = mat.GetDynamicFrictionAttr().Get()
+            rest = mat.GetRestitutionAttr().Get()
+            print(
+                f"[PHYS]: env material {prim.GetPath()} static_friction={sf} "
+                f"dynamic_friction={df} restitution={rest}",
+                flush=True,
+            )
+            found += 1
+            if found >= 8:
+                break
+    if found == 0:
+        print("[PHYS]: no explicit PhysicsMaterial under /World/Environment "
+              "(floor uses PhysX defaults: friction~0.5)", flush=True)
 
 
 def strip_d455_physics_apis() -> None:
@@ -807,7 +870,7 @@ def _policy_target_tensor(robot, controller: B2ArxIsaacPolicyController) -> torc
 
 
 def make_policy_controller(robot) -> B2ArxIsaacPolicyController:
-    cfg = load_deploy_config(args_cli.deploy_config)
+    cfg = DEPLOY_CFG if DEPLOY_CFG is not None else load_deploy_config(args_cli.deploy_config)
     onnx = cfg.policy.resolved_onnx()
     deploy_yaml = cfg.policy.resolved_deploy_yaml()
     if not Path(onnx).exists():
@@ -832,6 +895,10 @@ def make_policy_controller(robot) -> B2ArxIsaacPolicyController:
         f"control_dt={controller.control_dt:.4f}s",
         flush=True,
     )
+    if cfg.policy.checkpoint is not None:
+        print(f"[INFO]: Policy source checkpoint metadata: {cfg.policy.checkpoint}", flush=True)
+    if cfg.policy.manifest is not None:
+        print(f"[INFO]: Policy export manifest metadata: {cfg.policy.manifest}", flush=True)
     return controller
 
 
@@ -849,6 +916,7 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene) -> None:
     print("[INFO]: B2+ARX R5 manipulation scene is running.", flush=True)
     if SELECTED_ENVIRONMENT_USD:
         print(f"[INFO]: Background environment USD: {SELECTED_ENVIRONMENT_USD}", flush=True)
+        print_environment_physics_debug()
     else:
         print("[INFO]: Background environment: minimal Isaac ground plane.", flush=True)
     print(f"[INFO]: Control mode: {args_cli.control_mode}", flush=True)
