@@ -21,15 +21,25 @@ TAG_TF_CHILD_FRAME = f"{TAG_FAMILY}:{TAG_ID}"
 # 默认 marker prim (num_envs=1; spec §7 R6 多 env 不在 V1 范围)
 DEFAULT_TAG_MARKER_PRIM = "/World/envs/env_0/TagMarker"
 
-# parent frame (d455_color_optical_frame) 对应的相机 prim。AprilTag 的 /tf 是 tag 相对
-# 这个 frame 的位姿, SubscribeTransformTree 需要 parent 也在 frameNamesMap 里才能把 tag
-# 位姿换算到世界坐标写进 marker (官方 test_subscribers.py 的 map 含 parent+child 两项)。
+# parent frame (d455_color_optical_frame) 对应的 prim。AprilTag 的 /tf 是 tag 相对这个
+# frame 的位姿, SubscribeTransformTree 需要 parent 在 frameNamesMap 里, 用 parent prim 的
+# 世界变换把 tag 位姿换算到世界坐标写进 marker (官方 test_subscribers.py 的 map 含 parent+child)。
+#
+# 关键: 不能直接用 color 相机 prim。USD 相机是 opengl 约定 (-Z 前/+Y 上), 而 AprilTag 的 TF
+# 是 ROS 光学约定 (+Z 前/-Y 上), 两者差「绕 X 轴 180°」(IsaacLab math.py 官方公式
+# T_ROS = diag(1,-1,-1)·T_USD)。直接用相机 prim 会把 tag 的"前方"当成"后方", marker 落到
+# 机器人身上。所以 parent 映射到相机 prim 下一个额外绕 X 转 180° 的子 prim (ROS 光学系)。
+COLOR_OPTICAL_FRAME_SUBPRIM = "ros_optical"
 DEFAULT_COLOR_CAMERA_PRIM = (
     "/World/envs/env_0/Robot/R5a_link6/D455/RSD455/Camera_OmniVision_OV9782_Color"
 )
+DEFAULT_COLOR_OPTICAL_PRIM = f"{DEFAULT_COLOR_CAMERA_PRIM}/{COLOR_OPTICAL_FRAME_SUBPRIM}"
+
+# USD/opengl -> ROS 光学系: 绕 X 轴 180°, 四元数 wxyz (旋转矩阵 = diag(1,-1,-1))。
+ROS_OPTICAL_QUAT_WXYZ = (0.0, 1.0, 0.0, 0.0)
 
 
-def build_tag_frame_names_map(marker_prim_path: str, color_camera_prim_path: str) -> list[str]:
+def build_tag_frame_names_map(marker_prim_path: str, color_optical_prim_path: str) -> list[str]:
     """构造 ROS2SubscribeTransformTree.frameNamesMap。
 
     顺序是 [prim_path, frame_id, ...] (偶数长度)。本机验证来源:
@@ -40,11 +50,33 @@ def build_tag_frame_names_map(marker_prim_path: str, color_camera_prim_path: str
     (parent)、child_frame_id=tag36h11:0。官方测试的 map 同时给了 parent("/World"↔"world")
     和 child("/World/cube"↔"cube")。只给 child 会让节点找不到 parent 参考系, marker 不动
     (spec R1 验证: parent 必须在 map 里)。顺序写反 (frame_id 在前) 同样会断链。
+
+    parent 映射到 ROS 光学系子 prim (setup_color_optical_frame_prim 建的, 绕 X 转 180°),
+    不是相机 prim 本身, 否则 ROS/USD 朝向差 180° 会让 marker 落到机器人身上。
     """
     return [
-        color_camera_prim_path, COLOR_OPTICAL_FRAME,  # parent: 相机 optical frame
+        color_optical_prim_path, COLOR_OPTICAL_FRAME,  # parent: ROS 光学系子 prim
         marker_prim_path, TAG_TF_CHILD_FRAME,          # child: tag
     ]
+
+
+def setup_color_optical_frame_prim(color_camera_prim_path=DEFAULT_COLOR_CAMERA_PRIM):
+    """在 color 相机 prim 下建一个绕 X 转 180° 的子 Xform = ROS 光学系 parent frame。
+
+    USD 相机是 opengl 约定 (-Z 前), AprilTag TF 是 ROS 约定 (+Z 前), 差绕 X 180°
+    (IsaacLab math.py: T_ROS = diag(1,-1,-1)·T_USD)。SubscribeTransformTree 用这个子 prim
+    的世界变换当 parent 参考系, tag 的 +Z 前方才会正确落到相机前方的桌面, 而非身后。
+    返回子 prim 路径, 供 frameNamesMap 用。
+    """
+    import omni.usd
+    from pxr import Gf, UsdGeom
+
+    stage = omni.usd.get_context().get_stage()
+    optical_path = f"{color_camera_prim_path}/{COLOR_OPTICAL_FRAME_SUBPRIM}"
+    xform = UsdGeom.Xform.Define(stage, optical_path)
+    w, x, y, z = ROS_OPTICAL_QUAT_WXYZ
+    xform.AddOrientOp().Set(Gf.Quatf(float(w), float(x), float(y), float(z)))
+    return optical_path
 
 
 PUB_GRAPH_PATH = "/World/B2ArxROS2PubGraph"
@@ -104,13 +136,15 @@ def setup_d455_ros2_publishers(color_camera_prim_path, domain_id, width, height)
 def setup_tag_tf_subscriber(
     domain_id,
     marker_prim_path=DEFAULT_TAG_MARKER_PRIM,
-    color_camera_prim_path=DEFAULT_COLOR_CAMERA_PRIM,
+    color_optical_prim_path=DEFAULT_COLOR_OPTICAL_PRIM,
 ):
     """建订阅 action graph: 收 /tf, 按 frameNamesMap 把 tag child frame 套到 marker prim。
 
     ROS2SubscribeTransformTree 不是把 TF 读进 Python, 而是用 GfTransform/UsdGeomXformable
-    把收到的 TF 直接写进 prim 的变换 (spec §1)。frameNamesMap 同时映射 parent(相机 frame)
-    和 child(tag), 否则节点找不到 parent 参考系, marker 不动。所以回路通 = marker prim 移动。
+    把收到的 TF 直接写进 prim 的变换 (spec §1)。frameNamesMap 同时映射 parent(ROS 光学系
+    子 prim) 和 child(tag), 否则节点找不到 parent 参考系, marker 不动。回路通 = marker 移动。
+    注意: color_optical_prim_path 必须是 setup_color_optical_frame_prim 建的那个绕 X 转 180°
+    的子 prim, 不是相机 prim 本身。
     """
     import omni.graph.core as og
 

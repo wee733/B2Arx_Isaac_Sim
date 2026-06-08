@@ -1147,7 +1147,13 @@ def main() -> None:
             domain_id=args_cli.ros2_domain_id,
             width=D455_IMAGE_WIDTH, height=D455_IMAGE_HEIGHT,
         )
-        ros2_bridge.setup_tag_tf_subscriber(domain_id=args_cli.ros2_domain_id)
+        # 建 ROS 光学系子 prim (绕 X 180°) 当 TF parent, 再起订阅图。顺序: prim 必须先存在。
+        optical_prim = ros2_bridge.setup_color_optical_frame_prim(
+            color_camera_prim_path=D455_COLOR_CAMERA_PRIM_PATH,
+        )
+        ros2_bridge.setup_tag_tf_subscriber(
+            domain_id=args_cli.ros2_domain_id, color_optical_prim_path=optical_prim,
+        )
         print(f"[INFO]: ROS2 bridge active, domain={args_cli.ros2_domain_id}, "
               f"publishing {ros2_bridge.COLOR_IMAGE_TOPIC}", flush=True)
 
