@@ -11,6 +11,9 @@ from isaaclab.app import AppLauncher
 DEFAULT_ROBOT_USD = Path(__file__).resolve().parents[1] / "assets" / "my_B2Arx" / "my_b2arx" / "my_robot.usd"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "outputs" / "camera"
 
+# tag36h11:0 纹理 (nearest 放大到 800x800, 黑白边界锐利, 贴大面不糊; 见 assets/apriltag/)。
+APRILTAG_TEXTURE_PATH = Path(__file__).resolve().parents[1] / "assets" / "apriltag" / "tag36_11_00000_800.png"
+
 
 parser = argparse.ArgumentParser(description="Spawn a B2+ARX R5 manipulation scene in Isaac Lab.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of scene copies.")
@@ -655,6 +658,51 @@ def strip_d455_physics_apis() -> None:
         )
 
 
+def bind_apriltag_texture() -> None:
+    """Paint the tag36h11:0 texture onto each env's AprilTag Cuboid (--ros2 only).
+
+    The Cuboid is spawned with a plain white PreviewSurface placeholder (cfg layer has no
+    diffuse-texture hook), so we create an OmniPBR MDL material, point its diffuse_texture
+    at the upscaled tag PNG, and bind it to the prim. API verified against Isaac's own
+    isaacsim.replicator.behavior scene_utils.create_mdl_material / texture_randomizer.
+    project_uvw=True so the planar UV maps the full tag across the top face; texture_scale
+    (1,1) = one tag per face. Without this the board stays blank and AprilTag sees nothing.
+    """
+    if not args_cli.ros2:
+        return
+    if not APRILTAG_TEXTURE_PATH.is_file():
+        print(f"[WARN]: AprilTag texture not found: {APRILTAG_TEXTURE_PATH}", flush=True)
+        return
+    import omni.kit.commands
+    import omni.usd
+    from pxr import Sdf, UsdShade
+
+    stage = omni.usd.get_context().get_stage()
+    texture_asset = str(APRILTAG_TEXTURE_PATH)
+    bound = 0
+    for env_index in range(args_cli.num_envs):
+        board_path = f"/World/envs/env_{env_index}/AprilTag"
+        board_prim = stage.GetPrimAtPath(board_path)
+        if not board_prim.IsValid():
+            continue
+        mtl_path = f"{board_path}/AprilTagMaterial"
+        omni.kit.commands.execute(
+            "CreateMdlMaterialPrim", mtl_url="OmniPBR.mdl", mtl_name="OmniPBR", mtl_path=mtl_path
+        )
+        mtl_prim = stage.GetPrimAtPath(mtl_path)
+        shader = UsdShade.Shader(omni.usd.get_shader_from_material(mtl_prim, get_prim=True))
+        shader.CreateInput("diffuse_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(texture_asset))
+        shader.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(True)
+        shader.CreateInput("texture_scale", Sdf.ValueTypeNames.Float2).Set((1.0, 1.0))
+        UsdShade.MaterialBindingAPI.Apply(board_prim)
+        UsdShade.MaterialBindingAPI(board_prim).Bind(
+            UsdShade.Material(mtl_prim), UsdShade.Tokens.strongerThanDescendants
+        )
+        bound += 1
+    if bound:
+        print(f"[INFO]: AprilTag tag36h11:0 texture bound on {bound} board(s).", flush=True)
+
+
 def set_viewport_camera() -> None:
     if args_cli.headless:
         return
@@ -1082,6 +1130,7 @@ def main() -> None:
     scene_cfg = B2ArxManipulationSceneCfg(num_envs=args_cli.num_envs, env_spacing=args_cli.env_spacing)
     scene = InteractiveScene(scene_cfg)
     strip_d455_physics_apis()
+    bind_apriltag_texture()
 
     if args_cli.ros2:
         import ros2_bridge
