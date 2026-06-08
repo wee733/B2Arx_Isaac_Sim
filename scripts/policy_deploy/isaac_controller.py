@@ -120,11 +120,14 @@ class IsaacDeployPlantAdapter:
         if self.gripper_ids and gripper_q_target is not None:
             self.robot.set_joint_position_target(gripper_q_target, joint_ids=self._gripper_ids_tensor)
 
-    def write_control_gains(self, stiffness, damping) -> None:
+    def write_control_gains(self, stiffness, damping, joint_ids=None) -> None:
+        if joint_ids is None:
+            joint_ids = self.joint_ids
         stiffness_t = torch.as_tensor(stiffness, dtype=torch.float32, device=self.device).reshape(1, -1)
         damping_t = torch.as_tensor(damping, dtype=torch.float32, device=self.device).reshape(1, -1)
-        self.robot.write_joint_stiffness_to_sim(stiffness_t, joint_ids=self._joint_ids_tensor)
-        self.robot.write_joint_damping_to_sim(damping_t, joint_ids=self._joint_ids_tensor)
+        joint_ids_t = torch.as_tensor(joint_ids, dtype=torch.long, device=self.device)
+        self.robot.write_joint_stiffness_to_sim(stiffness_t, joint_ids=joint_ids_t)
+        self.robot.write_joint_damping_to_sim(damping_t, joint_ids=joint_ids_t)
 
 
 class B2ArxIsaacPolicyController:
@@ -160,9 +163,10 @@ class B2ArxIsaacPolicyController:
         self._state_elapsed = 0.0
         self._last_state_name = start_state
         self._last_q_target = self.runtime.offset.copy()
-        self._last_kp = self.runtime.stiffness.copy()
-        self._last_kd = self.runtime.damping.copy()
+        self._last_kp = np.full_like(self.runtime.stiffness, np.nan, dtype=np.float32)
+        self._last_kd = np.full_like(self.runtime.damping, np.nan, dtype=np.float32)
         self._last_raw_action = np.zeros(self.runtime.action_dim, dtype=np.float32)
+        self._last_command = ArmLocoCommand()
 
         passive = PassiveState()
         fixstand = FixStandState()
@@ -202,6 +206,10 @@ class B2ArxIsaacPolicyController:
         return self._last_q_target.copy()
 
     @property
+    def last_command(self) -> ArmLocoCommand:
+        return ArmLocoCommand(**vars(self._last_command))
+
+    @property
     def control_dt(self) -> float:
         return self.runtime.step_dt
 
@@ -210,8 +218,9 @@ class B2ArxIsaacPolicyController:
         self._state_elapsed = 0.0
         self._last_state_name = self.fsm.current_name
         self._last_q_target = self.runtime.offset.copy()
-        self._last_kp = self.runtime.stiffness.copy()
-        self._last_kd = self.runtime.damping.copy()
+        self._last_kp = np.full_like(self.runtime.stiffness, np.nan, dtype=np.float32)
+        self._last_kd = np.full_like(self.runtime.damping, np.nan, dtype=np.float32)
+        self._last_command = ArmLocoCommand()
         self._apply_gains_for_state()
         self.plant.apply_targets(self._last_q_target, self._default_gripper_target())
 
@@ -262,6 +271,7 @@ class B2ArxIsaacPolicyController:
                 prealign = self.fsm.states["ArmPreAlign"]
                 if isinstance(prealign, ArmPreAlignState) and prealign.ready:
                     cmd.arm_loco_pressed = True
+        self._last_command = ArmLocoCommand(**vars(cmd))
         return cmd
 
     def _apply_gains_for_state(self) -> None:
@@ -280,9 +290,56 @@ class B2ArxIsaacPolicyController:
             kp[12:18] = self.runtime.stiffness[12:18]
             kd[12:18] = self.runtime.damping[12:18]
         if not np.allclose(kp, self._last_kp) or not np.allclose(kd, self._last_kd):
-            self.plant.write_control_gains(kp, kd)
-            self._last_kp = kp
-            self._last_kd = kd
+            self._write_actuator_gains(kp, kd)
+            self._last_kp = kp.copy()
+            self._last_kd = kd.copy()
+
+    def _write_actuator_gains(self, stiffness, damping) -> None:
+        """Update actuator gains using IsaacLab's explicit/implicit split.
+
+        IdealPDActuator computes torques from actuator.stiffness/damping, while
+        implicit actuators need their PhysX drive gains updated. Keep explicit
+        PhysX drives untouched so the sim remains a pure explicit-PD mirror.
+        """
+        stiffness_t = torch.as_tensor(stiffness, dtype=torch.float32, device=self.plant.device).reshape(-1)
+        damping_t = torch.as_tensor(damping, dtype=torch.float32, device=self.plant.device).reshape(-1)
+        controlled_index_by_joint = {int(joint_id): i for i, joint_id in enumerate(self.plant.joint_ids)}
+        for actuator in self.robot.actuators.values():
+            local_ids, controlled_ids, sim_joint_ids = self._actuator_controlled_indices(
+                actuator.joint_indices, controlled_index_by_joint
+            )
+            if not sim_joint_ids:
+                continue
+            local_ids_t = torch.as_tensor(local_ids, dtype=torch.long, device=self.plant.device)
+            selected_stiffness = stiffness_t[torch.as_tensor(controlled_ids, dtype=torch.long, device=self.plant.device)]
+            selected_damping = damping_t[torch.as_tensor(controlled_ids, dtype=torch.long, device=self.plant.device)]
+            actuator_envs = actuator.stiffness.shape[0]
+            stiffness_values = selected_stiffness.reshape(1, -1).expand(actuator_envs, -1)
+            damping_values = selected_damping.reshape(1, -1).expand(actuator_envs, -1)
+            actuator.stiffness[:, local_ids_t] = stiffness_values
+            actuator.damping[:, local_ids_t] = damping_values
+            if getattr(actuator, "is_implicit_model", False):
+                self.plant.write_control_gains(stiffness_values, damping_values, joint_ids=sim_joint_ids)
+
+    def _actuator_controlled_indices(self, joint_indices, controlled_index_by_joint) -> tuple[list[int], list[int], list[int]]:
+        if isinstance(joint_indices, slice):
+            sim_joint_ids = list(range(*joint_indices.indices(self.robot.num_joints)))
+        elif isinstance(joint_indices, torch.Tensor):
+            sim_joint_ids = [int(i) for i in joint_indices.detach().cpu().reshape(-1).tolist()]
+        else:
+            sim_joint_ids = [int(i) for i in np.asarray(joint_indices).reshape(-1).tolist()]
+
+        local_ids = []
+        controlled_ids = []
+        controlled_sim_joint_ids = []
+        for local_id, sim_joint_id in enumerate(sim_joint_ids):
+            controlled_id = controlled_index_by_joint.get(sim_joint_id)
+            if controlled_id is None:
+                continue
+            local_ids.append(local_id)
+            controlled_ids.append(controlled_id)
+            controlled_sim_joint_ids.append(sim_joint_id)
+        return local_ids, controlled_ids, controlled_sim_joint_ids
 
     def _default_gripper_target(self) -> torch.Tensor | None:
         if not self.plant.gripper_ids:

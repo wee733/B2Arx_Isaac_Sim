@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 import yaml
 
 from scripts.policy_deploy.runtime import (
@@ -41,6 +43,10 @@ OBS_ORDER = [
     "ee_goal_sphere",
     "zero_force_obs",
 ]
+
+
+POLICY_STIFFNESS = [300.0, 300.0, 500.0] * 4 + [1.0] * 6
+POLICY_DAMPING = [7.5, 7.5, 12.5] * 4 + [2.0] * 6
 
 
 def _deploy_dict(frame_stack: int = 3) -> dict:
@@ -189,6 +195,38 @@ class FakePlant:
         return self.state
 
 
+class FakeCommandSource:
+    def __init__(self, command: ArmLocoCommand):
+        self.command = command
+
+    def poll(self) -> ArmLocoCommand:
+        return self.command
+
+
+class FakeExplicitActuator:
+    is_implicit_model = False
+
+    def __init__(self, joint_indices, num_joints: int | None = None):
+        self.joint_indices = np.asarray(joint_indices)
+        count = len(joint_indices) if num_joints is None else int(num_joints)
+        self.stiffness = torch.full((1, count), -1.0)
+        self.damping = torch.full((1, count), -1.0)
+
+
+class FakeImplicitActuator(FakeExplicitActuator):
+    is_implicit_model = True
+
+
+class FakeControllerPlant:
+    device = "cpu"
+
+    def __init__(self):
+        self.written = []
+
+    def write_control_gains(self, stiffness, damping, joint_ids=None) -> None:
+        self.written.append((np.asarray(stiffness), np.asarray(damping), joint_ids))
+
+
 def _state(q=None, dq=None, tilt_rad: float = 0.0) -> DummyState:
     return DummyState(
         q=np.asarray(q if q is not None else np.arange(18, dtype=np.float32), dtype=np.float32),
@@ -312,6 +350,114 @@ def test_command_buffer_pinned_init_survives_reset() -> None:
     buf.step_selected_dimension(1)   # perturb away from the configured sphere
     buf.reset_to_init()
     assert buf.get() == pytest.approx([0.5, 0.3, -0.4])
+
+
+def test_controller_records_last_command_after_auto_overlay() -> None:
+    from scripts.policy_deploy.isaac_controller import B2ArxIsaacPolicyController
+
+    source_cmd = ArmLocoCommand(vx=0.2)
+    controller = B2ArxIsaacPolicyController.__new__(B2ArxIsaacPolicyController)
+    controller.command_source = FakeCommandSource(source_cmd)
+    controller.auto_arm_loco = True
+    controller.fsm = SimpleNamespace(current_name="Passive", states={})
+
+    cmd = controller._command_for_current_state()
+
+    assert cmd.fixstand_pressed is True
+    assert controller.last_command.vx == pytest.approx(0.2)
+    assert controller.last_command.fixstand_pressed is True
+    cmd.vx = 9.0
+    assert controller.last_command.vx == pytest.approx(0.2)
+
+
+def test_controller_state_gains_update_explicit_actuator_model() -> None:
+    from scripts.policy_deploy.isaac_controller import B2ArxIsaacPolicyController
+
+    controller = B2ArxIsaacPolicyController.__new__(B2ArxIsaacPolicyController)
+    controller.runtime = SimpleNamespace(
+        stiffness=np.asarray(POLICY_STIFFNESS, dtype=np.float32),
+        damping=np.asarray(POLICY_DAMPING, dtype=np.float32),
+    )
+    controller.fsm = SimpleNamespace(current_name="Passive")
+    controller.plant = FakeControllerPlant()
+    controller.plant.joint_ids = list(range(18))
+    controller.robot = SimpleNamespace(
+        num_joints=20,
+        actuators={
+            "legs": FakeExplicitActuator([0, 3, 6]),
+            "arm": FakeExplicitActuator([12, 13, 14, 15, 16, 17]),
+            "gripper": FakeExplicitActuator([18, 19]),
+        }
+    )
+    controller._last_kp = np.full(18, -1.0, dtype=np.float32)
+    controller._last_kd = np.full(18, -1.0, dtype=np.float32)
+
+    controller._apply_gains_for_state()
+
+    assert controller.robot.actuators["legs"].stiffness.tolist() == [[0.0, 0.0, 0.0]]
+    assert controller.robot.actuators["legs"].damping.tolist() == [[10.0, 10.0, 10.0]]
+    assert controller.robot.actuators["arm"].stiffness.tolist() == [[0.0] * 6]
+    assert controller.robot.actuators["arm"].damping.tolist() == [[10.0] * 6]
+    assert controller.robot.actuators["gripper"].stiffness.tolist() == [[-1.0, -1.0]]
+    assert controller.robot.actuators["gripper"].damping.tolist() == [[-1.0, -1.0]]
+    assert controller.plant.written == []
+
+
+def test_controller_state_gains_update_implicit_actuator_drive_only_for_controlled_joints() -> None:
+    from scripts.policy_deploy.isaac_controller import B2ArxIsaacPolicyController
+
+    controller = B2ArxIsaacPolicyController.__new__(B2ArxIsaacPolicyController)
+    controller.runtime = SimpleNamespace(
+        stiffness=np.asarray(POLICY_STIFFNESS, dtype=np.float32),
+        damping=np.asarray(POLICY_DAMPING, dtype=np.float32),
+    )
+    controller.fsm = SimpleNamespace(current_name="ArmLoco")
+    controller.plant = FakeControllerPlant()
+    controller.plant.joint_ids = list(range(18))
+    controller.robot = SimpleNamespace(
+        num_joints=20,
+        actuators={
+            "implicit_hips": FakeImplicitActuator([0, 3, 6, 9]),
+            "explicit_arm": FakeExplicitActuator([12, 13, 14, 15, 16, 17]),
+            "gripper": FakeExplicitActuator([18, 19]),
+        },
+    )
+    controller._last_kp = np.full(18, -1.0, dtype=np.float32)
+    controller._last_kd = np.full(18, -1.0, dtype=np.float32)
+
+    controller._apply_gains_for_state()
+
+    assert len(controller.plant.written) == 1
+    stiffness, damping, joint_ids = controller.plant.written[0]
+    assert stiffness.tolist() == [[300.0, 300.0, 300.0, 300.0]]
+    assert damping.tolist() == [[7.5, 7.5, 7.5, 7.5]]
+    assert joint_ids == [0, 3, 6, 9]
+    assert controller.robot.actuators["implicit_hips"].stiffness.tolist() == [[300.0, 300.0, 300.0, 300.0]]
+    assert controller.robot.actuators["implicit_hips"].damping.tolist() == [[7.5, 7.5, 7.5, 7.5]]
+    assert controller.robot.actuators["explicit_arm"].stiffness.tolist() == [[1.0] * 6]
+    assert controller.robot.actuators["explicit_arm"].damping.tolist() == [[2.0] * 6]
+
+
+def test_arm_loco_command_has_only_mirror_ee_fields() -> None:
+    cmd = ArmLocoCommand()
+
+    assert not hasattr(cmd, "ee_pitch_step")
+    assert not hasattr(cmd, "ee_yaw_step")
+
+
+def test_command_buffer_steps_selected_dimension_like_mirror() -> None:
+    buf = ArmLocoCommandBuffer()
+
+    buf.step_selected_dimension(1)
+    assert buf.get() == pytest.approx([0.38, 0.56, 0.0])
+
+    buf.cycle_selected_dimension()
+    buf.step_selected_dimension(1)
+    assert buf.get() == pytest.approx([0.38, 0.61, 0.0])
+
+    buf.cycle_selected_dimension()
+    buf.step_selected_dimension(-1)
+    assert buf.get() == pytest.approx([0.38, 0.61, -0.05])
 
 
 def test_isaac_controller_defaults_and_joint_order() -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 
@@ -10,8 +12,19 @@ The current Isaac 5.1 asset bucket stores it under:
 Isaac > Sensors > Intel > RealSense > rsd455.usd.
 """
 
+# Repo-local copy of the official rsd455.usd (extracted from the robots_and_sensors
+# asset pack) so the scene is self-contained and does not depend on Nucleus being
+# reachable. Layout mirrors the Nucleus tree under assets/isaac_sensors/Isaac/.
+LOCAL_D455_USD_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "assets" / "isaac_sensors" / "Isaac" / "Sensors" / "Intel" / "RealSense" / "rsd455.usd"
+)
+
 
 def resolve_d455_usd_path(isaac_nucleus_dir: str) -> str:
+    """Prefer the repo-local rsd455.usd; fall back to the Nucleus asset root."""
+    if LOCAL_D455_USD_PATH.is_file():
+        return str(LOCAL_D455_USD_PATH)
     return isaac_nucleus_dir.rstrip("/") + D455_USD_RELATIVE_PATH
 
 
@@ -82,3 +95,4 @@ D455_OFFICIAL_CAMERA_PRIMS = {
 # scene["d455_*_camera"] while the visual model and camera layout stay inside the official D455 USD.
 D455_IMAGE_WIDTH = 640
 D455_IMAGE_HEIGHT = 480
+

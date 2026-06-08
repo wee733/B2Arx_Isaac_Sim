@@ -22,12 +22,16 @@ class PolicyConfig:
 
     onnx and deploy_yaml default to the standard rsl_rl export layout under run_dir:
     ``run_dir/exported/policy_full.onnx`` and ``run_dir/params/deploy.yaml``.
+    checkpoint and manifest are optional metadata for tracing which .pt produced
+    the exported ONNX bundle; runtime inference still uses only onnx + deploy_yaml.
     """
 
     name: str = "default"
     run_dir: Path | None = None
     onnx: Path | None = None
     deploy_yaml: Path | None = None
+    checkpoint: Path | None = None
+    manifest: Path | None = None
 
     def resolved_onnx(self) -> Path:
         if self.onnx is not None:
@@ -50,6 +54,8 @@ class PolicyConfig:
             run_dir=_resolve_path(data.get("run_dir")),
             onnx=_resolve_path(data.get("onnx")),
             deploy_yaml=_resolve_path(data.get("deploy_yaml")),
+            checkpoint=_resolve_path(data.get("checkpoint")),
+            manifest=_resolve_path(data.get("manifest")),
         )
 
 
@@ -87,9 +93,9 @@ class DeploySettings:
 
 _KEYBOARD_DEFAULTS = {"v_x_sensitivity": 0.8, "v_y_sensitivity": 0.4, "omega_z_sensitivity": 1.0}
 _GAMEPAD_DEFAULTS = {
-    "v_x_sensitivity": 1.0,
-    "v_y_sensitivity": 1.0,
-    "omega_z_sensitivity": 1.0,
+    "v_x_sensitivity": 0.3,
+    "v_y_sensitivity": 0.2,
+    "omega_z_sensitivity": 0.3,
     "dead_zone": 0.01,
 }
 
