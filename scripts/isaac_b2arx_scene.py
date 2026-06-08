@@ -90,6 +90,16 @@ if not args_cli.no_scene_camera:
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+# Enable the ROS2 bridge extension right after the app launches, before the physics
+# device/backend is negotiated (SimulationContext). Enabling it later — between
+# SimulationContext and InteractiveScene — leaves scene.env_origins on CPU while the
+# robot lands on cuda:0, crashing reset_scene with a device mismatch. Official IsaacLab
+# scripts (e.g. benchmarks/benchmark_non_rl.py) enable extensions at this same point.
+if args_cli.ros2:
+    from isaacsim.core.utils.extensions import enable_extension
+
+    enable_extension("isaacsim.ros2.bridge")
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -1068,10 +1078,6 @@ def main() -> None:
     sim_cfg = sim_utils.SimulationCfg(dt=1.0 / 200.0, device=args_cli.device, use_fabric=not args_cli.disable_fabric)
     sim = SimulationContext(sim_cfg)
     sim.set_camera_view([2.25, -2.0, 1.65], [0.55, 0.0, 0.45])
-
-    if args_cli.ros2:
-        from isaacsim.core.utils.extensions import enable_extension
-        enable_extension("isaacsim.ros2.bridge")
 
     scene_cfg = B2ArxManipulationSceneCfg(num_envs=args_cli.num_envs, env_spacing=args_cli.env_spacing)
     scene = InteractiveScene(scene_cfg)
