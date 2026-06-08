@@ -17,7 +17,7 @@
 ```bash
 cd /home/lbz/b2arx_isaac_sim
 conda activate isaaclab
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --enable_cameras
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py
 ```
 
 默认模式是 `hold`：每个物理步都会给机器人发送初始关节目标，让 B2+R5 不会因为重力直接塌下去。这个默认姿态和训练 / sim2sim 的初始设计对齐，机械臂 PD 默认使用最新的系统辨识纯 PD 参数。
@@ -31,13 +31,15 @@ TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --enab
 如果想和训练时的高增益 arm profile 对比：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --enable_cameras --arm_gain_profile train
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --arm_gain_profile train
 ```
 
 ## 策略部署
 
 场景现在可以不再只固定 demo 姿态，而是加载导出的 B2+R5 策略。部署链路对齐 `/home/lbz/b2arx/b2arx_sim2sim2real` 的实际控制设计：
 
+- 本独立场景不直接加载训练 checkpoint `.pt`
+- `.pt` 要先在训练仓导出为 `exported/policy_full.onnx` 和 `params/deploy.yaml`
 - 使用嵌套的 `params/deploy.yaml`
 - 使用 `exported/policy_full.onnx`
 - 单帧 observation 是 73 维
@@ -47,18 +49,48 @@ TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --enab
 - action 解码为 `q_target = offset + raw_action * scale`，然后按关节限位裁剪
 - raw action index `17` 会被锁成 `0.0`，对齐 real/mirror 里的 joint6 lock 设计
 
-默认策略包：
+### 从 checkpoint 导出部署包
+
+如果你训练出了新的 checkpoint，例如 `model_15000.pt`，先回到训练仓导出部署包：
+
+```bash
+cd /home/lbz/b2arx
+conda activate isaaclab
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/rsl_rl/play_onnx.py \
+  --task B2arx-v0 \
+  --checkpoint /home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02/model_15000.pt \
+  --export-deploy \
+  --headless
+```
+
+导出完成后，同一个 run 目录下应该出现 / 更新：
 
 ```text
+<run_dir>/exported/policy_full.onnx
+<run_dir>/params/deploy.yaml
+<run_dir>/exported/deploy_manifest.txt
+```
+
+`deploy_manifest.txt` 会记录这个 ONNX 是从哪个 checkpoint 导出的。这个信息也可以写进
+`scripts/policy_deploy/deploy_config.example.yaml` 的 `policy.checkpoint` 和
+`policy.manifest` 字段，方便启动时确认当前跑的是哪版策略。注意：这两个字段只是元数据；
+实际推理加载的是 `policy.onnx`，或默认的 `<run_dir>/exported/policy_full.onnx`。
+
+### 运行导出的策略
+
+默认策略包当前指向 `model_14000.pt` 导出的 ONNX：
+
+```text
+/home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02/model_14000.pt
 /home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02/exported/policy_full.onnx
 /home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02/params/deploy.yaml
+/home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02/exported/deploy_manifest.txt
 ```
 
 直接从 `ArmLoco` 启动策略（默认 example 配置即为此场景）：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
-  --enable_cameras \
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
   --control_mode policy \
   --print_policy_debug
 ```
@@ -69,8 +101,7 @@ TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
 （scripted / keyboard / gamepad），再用 `--deploy_config <你的.yaml>` 指定：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
-  --enable_cameras \
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
   --control_mode policy \
   --deploy_config /path/to/my_deploy_config.yaml \
   --duration 5.0 \
@@ -82,16 +113,21 @@ TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
 键盘遥控键位：`F`=FixStand `G`=ArmPreAlign `H`=ArmLoco `P`=Passive；
 `R`=切换 EE 维度 `I`/`K`=当前维 ± `O`=EE 复位；方向键/小键盘走 vx/vy，`Z`/`X` 走 yaw。
 
+手柄/Hitbox 按 MuJoCo mirror 语义：`A`=FixStand，左摇杆按键=ArmPreAlign，
+`Y`/Start=ArmLoco，`B`=Passive，`X`=切换 EE 维度，Back/右摇杆按键=EE 复位；
+D-pad 或左摇杆给 `vx/vy`，LB/RB 给 `wz`，LT/RT 是按住对当前 EE 维度做负/正向步进。
+`--print_policy_debug` 会打印 `cmd=[vx vy wz]`、`ee_hold` 和 `ee_event`，方便确认输入已经进策略。
+
 如果机械臂又开始抖，先不加载相机，只测默认辨识参数：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --headless --duration 1.0 --no_scene_camera
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --headless --duration 1.0 --no_scene_camera
 ```
 
 如果要排除桌子和物体的接触问题，只加载机器人和地面：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --headless --duration 1.0 --no_scene_camera --no_workspace
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --headless --duration 1.0 --no_scene_camera --no_workspace
 ```
 
 ## 场景资产
@@ -107,9 +143,7 @@ Asset Browser 里类似 `Thumbnail ... does not belong to file ...` 的 warning 
 直接加载官方背景场景：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
-  --enable_cameras \
-  --scene_asset warehouse
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --scene_asset warehouse
 ```
 
 内置可选项：
@@ -123,8 +157,7 @@ TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
 也可以传本地路径、HTTP URL 或 Omniverse URL：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
-  --enable_cameras \
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
   --environment_usd "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/warehouse.usd"
 ```
 
@@ -177,7 +210,7 @@ ${ISAAC_NUCLEUS_DIR}/Sensors/Intel/RealSense/rsd455.usd
 默认 viewport 仍然看外部场景相机，这样能看到腕部 D455 本体。如果要切到腕部相机视角：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --enable_cameras --viewer_camera color
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --viewer_camera color
 ```
 
 `--viewer_camera depth` 只是把 viewport 切到 depth camera prim 的渲染 RGB 视角，不会把 Isaac viewport 变成深度 colormap。真正的深度数据来自 `distance_to_image_plane` tensor。
@@ -185,23 +218,19 @@ TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --enab
 实时看深度伪彩色窗口：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
-  --enable_cameras \
-  --show_depth_preview
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --show_depth_preview
 ```
 
 保存相机帧：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --enable_cameras --save_camera_frames
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --save_camera_frames
 ```
 
 打印 D455 asset 和 camera prim 路径：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
-  --enable_cameras \
-  --print_d455_debug
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --print_d455_debug
 ```
 
 保存的相机输出在 `outputs/camera`：
@@ -219,8 +248,7 @@ TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
 打印选中物体对应的 EE 球坐标目标：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
-  --enable_cameras \
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
   --print_ee_target_debug \
   --target_object red_box
 ```
@@ -228,9 +256,8 @@ TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
 短时间 headless 相机和 EE target smoke test：
 
 ```bash
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py \
   --headless \
-  --enable_cameras \
   --duration 0.25 \
   --save_camera_frames \
   --print_ee_target_debug \
@@ -263,7 +290,7 @@ IsaacLab 使用的深度 tensor 是 `distance_to_image_plane`；`depth_m_*.npy` 
 cd /home/lbz/b2arx_isaac_sim
 conda activate isaaclab
 mkdir -p assets/my_B2Arx/my_b2arx
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p /home/lbz/IsaacLab/scripts/tools/convert_urdf.py \
+/home/lbz/IsaacLab/isaaclab.sh -p /home/lbz/IsaacLab/scripts/tools/convert_urdf.py \
   assets/my_B2Arx/my_robot.urdf \
   assets/my_B2Arx/my_b2arx/my_robot.usd \
   --merge-joints \
@@ -278,7 +305,7 @@ TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p /home/lbz/IsaacLab/scripts/tools/co
 ```bash
 cd /home/lbz/b2arx_isaac_sim
 conda activate isaaclab
-TERM=xterm /home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --headless --duration 1.0 --no_scene_camera
+/home/lbz/IsaacLab/isaaclab.sh -p scripts/isaac_b2arx_scene.py --headless --duration 1.0 --no_scene_camera
 ```
 
 如果 Isaac 启动很慢，先查一下是不是有其它 Isaac 训练或仿真进程占着 GPU/CPU：

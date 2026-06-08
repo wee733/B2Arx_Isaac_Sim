@@ -7,7 +7,7 @@ from isaaclab.devices.gamepad.se2_gamepad import Se2Gamepad, Se2GamepadCfg
 
 from ..fsm import ArmLocoCommand
 from .base import CommandSource
-from .edge import ButtonEdgeFilter
+from .gamepad_mapping import GamepadMirrorMapper
 from .latch import _CommandLatch
 
 # Keyboard letter -> latch event name (one-shot, clean KEY_PRESS edges).
@@ -59,20 +59,6 @@ class KeyboardCommandSource(CommandSource):
         self._device = None
 
 
-# Gamepad button (carb enum name) -> latch event. One-shot, edge-filtered.
-_GAMEPAD_BUTTON_EVENTS = {
-    "A": ("fixstand_pressed", True),
-    "LEFT_STICK": ("arm_prealign_pressed", True),
-    "Y": ("arm_loco_pressed", True),
-    "MENU": ("arm_loco_pressed", True),
-    "B": ("passive_pressed", True),
-    "X": ("ee_cycle_dim", True),
-    "RIGHT_STICK": ("ee_reset", True),
-    "RIGHT_TRIGGER": ("ee_step", 1),
-    "LEFT_TRIGGER": ("ee_step", -1),
-}
-
-
 class GamepadCommandSource(CommandSource):
     """Wraps Se2Gamepad for velocity; self-subscribes carb for edge-filtered buttons.
 
@@ -82,7 +68,7 @@ class GamepadCommandSource(CommandSource):
     """
 
     def __init__(self, sensitivity: dict) -> None:
-        import omni
+        import omni.appwindow
 
         cfg = Se2GamepadCfg(
             v_x_sensitivity=float(sensitivity["v_x_sensitivity"]),
@@ -92,7 +78,12 @@ class GamepadCommandSource(CommandSource):
         )
         self._device = Se2Gamepad(cfg)
         self._latch = _CommandLatch()
-        self._edges = ButtonEdgeFilter(press_thresh=0.5)
+        self._mapper = GamepadMirrorMapper(
+            max_vx=float(sensitivity["v_x_sensitivity"]),
+            max_vy=float(sensitivity["v_y_sensitivity"]),
+            max_wz=float(sensitivity["omega_z_sensitivity"]),
+            press_thresh=0.5,
+        )
         self._input = carb.input.acquire_input_interface()
         self._gamepad = omni.appwindow.get_default_app_window().get_gamepad(0)
         self._sub = self._input.subscribe_to_gamepad_events(
@@ -103,23 +94,29 @@ class GamepadCommandSource(CommandSource):
     @classmethod
     def try_create(cls, sensitivity: dict) -> "GamepadCommandSource | None":
         """Return a source, or None if no gamepad is attached (caller falls back)."""
-        import omni
+        try:
+            import omni.appwindow
 
-        gamepad = omni.appwindow.get_default_app_window().get_gamepad(0)
+            app_window = omni.appwindow.get_default_app_window()
+            gamepad = app_window.get_gamepad(0) if app_window is not None else None
+        except Exception as exc:
+            print(f"[WARN] gamepad backend unavailable ({exc}); falling back to scripted command source", flush=True)
+            return None
         if gamepad is None:
             return None
         return cls(sensitivity)
 
     def _on_gamepad_event(self, event, *args) -> bool:
         name = event.input.name  # e.g. "A", "RIGHT_TRIGGER"
-        if name in _GAMEPAD_BUTTON_EVENTS and self._edges.update(name, event.value):
-            field_name, value = _GAMEPAD_BUTTON_EVENTS[name]
+        for field_name, value in self._mapper.update(name, event.value).items():
             self._latch.set(field_name, value)
         return True
 
     def poll(self) -> ArmLocoCommand:
-        vx, vy, wz = (float(v) for v in self._device.advance().tolist())
+        vx, vy, wz = self._mapper.resolve_velocity(self._device.advance().tolist())
         cmd = ArmLocoCommand(vx=vx, vy=vy, wz=wz)
+        for name, value in self._mapper.held_command_fields().items():
+            setattr(cmd, name, value)
         for name, value in self._latch.poll().items():
             setattr(cmd, name, value)
         return cmd
@@ -127,7 +124,7 @@ class GamepadCommandSource(CommandSource):
     def reset(self) -> None:
         self._device.reset()
         self._latch.reset()
-        self._edges.reset()
+        self._mapper.reset()
 
     def is_stale(self, now_s: float | None = None) -> bool:
         del now_s
