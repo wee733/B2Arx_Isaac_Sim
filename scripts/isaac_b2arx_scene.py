@@ -671,7 +671,9 @@ def spawn_apriltag_board() -> None:
 
     stage = omni.usd.get_context().get_stage()
     texture_asset = str(APRILTAG_TEXTURE_PATH)
-    half = 0.05  # 0.1m tag, centered
+    # 整张 quad 0.125m: tag36h11 PNG 是 10px (每边 1px 白 quiet zone, 内部 8x8 黑框)。
+    # AprilTag 的 size 量黑框外沿 = quad * 8/10。要让黑框 = Thor 的 size=0.1m, quad 须 0.125m。
+    half = 0.0625  # 0.125m quad -> 0.1m black border, 对齐 Thor size=0.1 (spec §4, R7)
     pos = Gf.Vec3d(1.16, 0.0, 0.455)
     spawned = 0
     for env_index in range(args_cli.num_envs):
