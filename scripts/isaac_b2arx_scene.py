@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 from pathlib import Path
 
 from isaaclab.app import AppLauncher
@@ -76,6 +77,10 @@ parser.add_argument(
     help="Show a live OpenCV pseudo-color preview of scene['d455_depth_camera'].",
 )
 parser.add_argument("--disable_fabric", action="store_true", help="Disable Fabric API and use USD instead.")
+parser.add_argument("--ros2", action="store_true",
+                    help="启用 ROS2 OmniGraph 发布(D455 color+camera_info+clock)+订阅(/tf 驱动 TagMarker)。")
+parser.add_argument("--ros2_domain_id", type=int, default=23,
+                    help="ROS_DOMAIN_ID, 必须与 Thor 端一致 (spec §4)。")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -142,6 +147,9 @@ R5_HOME_POS = {
     "R5a_joint8": 0.0,
 }
 
+# The official rsd455.usd entity is spawned under R5a_link6/D455; its internal camera
+# prims (under RSD455) carry the correct optical orientation, so binding CameraCfg to
+# them (spawn=None) gives the right view without recomputing rotations.
 D455_ASSET_PRIM_PATH = "/World/envs/env_0/Robot/R5a_link6/D455"
 D455_CAMERA_ROOT_PRIM_PATH = f"{D455_ASSET_PRIM_PATH}/RSD455"
 D455_COLOR_CAMERA_PRIM_PATH = f"{D455_CAMERA_ROOT_PRIM_PATH}/{D455_OFFICIAL_CAMERA_PRIMS['color']}"
@@ -194,6 +202,7 @@ OFFICIAL_SCENE_ASSETS = {
     "hospital": f"{ISAAC_NUCLEUS_DIR}/Environments/Hospital/hospital.usd",
 }
 
+# Repo-local rsd455.usd if present, else the Nucleus copy (see d455_geometry).
 D455_USD_PATH = resolve_d455_usd_path(ISAAC_NUCLEUS_DIR)
 
 
@@ -333,7 +342,7 @@ def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
                 max_depenetration_velocity=1.0,
             ),
             articulation_props=ArticulationRootPropertiesCfg(
-                enabled_self_collisions=False,
+                enabled_self_collisions=True,
                 solver_position_iteration_count=8,
                 solver_velocity_iteration_count=4,
             ),
@@ -461,6 +470,11 @@ class B2ArxManipulationSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(1.43, -0.10, 0.50)),
     )
 
+    # Spawn the official rsd455.usd entity (repo-local copy) under R5a_link6, then bind a
+    # CameraCfg(spawn=None) to each internal camera prim. The asset's internal prims carry
+    # the correct optical orientation, so the wrist view is right without recomputing any
+    # rotation. strip_d455_physics_apis() removes the asset's RigidBodyAPI/colliders after
+    # spawn so it is a pure visual+sensor payload and not parsed as an articulation link.
     d455_asset = None if args_cli.no_scene_camera else AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Robot/R5a_link6/D455",
         spawn=sim_utils.UsdFileCfg(usd_path=D455_USD_PATH),
@@ -502,6 +516,28 @@ class B2ArxManipulationSceneCfg(InteractiveSceneCfg):
         data_types=["rgb"],
         spawn=None,
     )
+
+    # --- ROS2 回路 V1: 被检测的虚拟 AprilTag + 回流 marker (spec §2.3) ---
+    # size 0.1m 必须 == Thor launch 的 size 参数 (spec §4, R7); 摆在工作台 D455 视野内。
+    apriltag_board = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/AprilTag",
+        spawn=sim_utils.CuboidCfg(
+            size=(0.1, 0.1, 0.004),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.9, 0.9), roughness=0.9),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(1.16, 0.0, 0.455)),
+    ) if args_cli.ros2 else None
+
+    # ROS2SubscribeTransformTree 把 Thor 回流的 tag 位姿写到这个 prim (spec §1)。
+    # 初始放在 (0,0,1.5) 离谱位置, 回路通时能明显看到它"跳"到 tag 处。
+    tag_marker = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/TagMarker",
+        spawn=sim_utils.SphereCfg(
+            radius=0.03,
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.1, 0.8), roughness=0.4),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 1.5)),
+    ) if args_cli.ros2 else None
 
 
 def reset_scene(scene: InteractiveScene) -> None:
@@ -567,7 +603,13 @@ def print_environment_physics_debug() -> None:
 
 
 def strip_d455_physics_apis() -> None:
-    """Make the mounted D455 a pure visual/sensor payload, not a nested rigid body."""
+    """Make the mounted D455 a pure visual/sensor payload, not a nested rigid body.
+
+    The official rsd455.usd carries RigidBodyAPI/colliders. Spawned under the robot
+    articulation, those would be parsed as articulation links and physx tensors would warn
+    "did not match any rigid bodies" after they are removed. We recurse the WHOLE D455
+    subtree and strip rigid/collision/joint APIs so it is a clean visual+sensor payload.
+    """
     if args_cli.no_scene_camera:
         return
     import omni.usd
@@ -581,8 +623,7 @@ def strip_d455_physics_apis() -> None:
         root_prim = stage.GetPrimAtPath(root_path)
         if not root_prim.IsValid():
             continue
-        prims = [root_prim, *list(root_prim.GetAllChildren())]
-        for prim in prims:
+        for prim in Usd.PrimRange(root_prim):
             if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
                 prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
                 prim.RemoveAPI(PhysxSchema.PhysxArticulationAPI)
@@ -768,10 +809,11 @@ def print_d455_debug() -> None:
     if args_cli.no_scene_camera or not args_cli.print_d455_debug:
         return
 
-    print("[D455]: Official Isaac Sim D455 USD asset is mounted under R5a_link6.")
+    print("[D455]: Official Isaac Sim D455 USD asset is mounted under R5a_link6 (repo-local rsd455.usd).")
     print(
         "[D455]: "
         f"usd_path={D455_USD_PATH} "
+        f"resolution={D455_IMAGE_WIDTH}x{D455_IMAGE_HEIGHT} "
         f"mount_pos={np.array2string(D455_MOUNT_POS, precision=4, suppress_small=True)} "
         f"mount_quat_wxyz={np.array2string(np.array(D455_MOUNT_ROT), precision=6, suppress_small=True)}",
         flush=True,
@@ -831,7 +873,14 @@ def print_d455_camera_world_poses() -> None:
 
 
 def print_arm_diagnostics(robot, target_joint_pos: torch.Tensor, elapsed: float) -> None:
+    leg_joint_names = [*LEG_HIP_JOINTS, *LEG_THIGH_JOINTS, *LEG_CALF_JOINTS]
+    leg_joint_ids = [robot.joint_names.index(name) for name in leg_joint_names]
     arm_joint_ids = [robot.joint_names.index(name) for name in ARM_JOINTS]
+    leg_pos = robot.data.joint_pos[:, leg_joint_ids]
+    leg_vel = robot.data.joint_vel[:, leg_joint_ids]
+    leg_target = target_joint_pos[:, leg_joint_ids]
+    leg_error = leg_pos - leg_target
+    leg_torque = robot.data.applied_torque[:, leg_joint_ids]
     arm_pos = robot.data.joint_pos[:, arm_joint_ids]
     arm_vel = robot.data.joint_vel[:, arm_joint_ids]
     arm_target = target_joint_pos[:, arm_joint_ids]
@@ -840,6 +889,9 @@ def print_arm_diagnostics(robot, target_joint_pos: torch.Tensor, elapsed: float)
     print(
         "[DIAG]: "
         f"t={elapsed:.2f}s "
+        f"leg_abs_err_max={leg_error.abs().max().item():.4f}rad "
+        f"leg_abs_vel_max={leg_vel.abs().max().item():.4f}rad/s "
+        f"leg_abs_tau_max={leg_torque.abs().max().item():.2f}Nm "
         f"arm_abs_err_max={arm_error.abs().max().item():.4f}rad "
         f"arm_abs_vel_max={arm_vel.abs().max().item():.4f}rad/s "
         f"arm_abs_tau_max={arm_torque.abs().max().item():.2f}Nm",
@@ -852,9 +904,13 @@ def print_policy_diagnostics(controller: B2ArxIsaacPolicyController, elapsed: fl
         return
     raw = controller.last_raw_action
     target = controller.last_q_target
+    cmd = controller.last_command
     print(
         "[POLICY]: "
         f"t={elapsed:.2f}s state={controller.state_name} "
+        f"cmd=[{cmd.vx:.2f} {cmd.vy:.2f} {cmd.wz:.2f}] "
+        f"ee_hold=[-{int(cmd.ee_step_negative_held)} +{int(cmd.ee_step_positive_held)}] "
+        f"ee_event=[cycle={int(cmd.ee_cycle_dim)} step={cmd.ee_step} reset={int(cmd.ee_reset)}] "
         f"raw_abs_max={np.max(np.abs(raw)):.4f} "
         f"target_arm={np.array2string(target[12:18], precision=3, suppress_small=True)} "
         f"ee_sphere={np.array2string(np.array(controller.command_buffer.get()), precision=3, suppress_small=True)}",
@@ -902,6 +958,20 @@ def make_policy_controller(robot) -> B2ArxIsaacPolicyController:
     return controller
 
 
+RENDER_DECIMATION = 4  # render every N physics steps (200Hz/4 = 50Hz, == training render_interval)
+
+
+def _needs_camera_frame(count: int) -> bool:
+    """True on physics steps where a fresh rendered frame is consumed (preview/save)."""
+    if args_cli.show_depth_preview and not args_cli.headless:
+        return True
+    if count == 30:
+        return True
+    if args_cli.save_camera_frames and count > 0 and count % 300 == 0:
+        return True
+    return False
+
+
 def run_simulator(sim: SimulationContext, scene: InteractiveScene) -> None:
     sim_dt = sim.get_physics_dt()
     count = 0
@@ -947,9 +1017,13 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene) -> None:
                 print("[INFO]: Live depth preview window uses distance_to_image_plane, not viewport RGB.", flush=True)
 
     try:
+        _dense_n = int(os.environ.get("DIAG_EVERY", "0"))  # >0: print leg/arm diag every N physics steps
         while simulation_app.is_running():
             if args_cli.duration > 0.0 and elapsed >= args_cli.duration:
                 break
+            if _dense_n and count % _dense_n == 0:
+                target_for_diag = hold_joint_pos if policy_controller is None else _policy_target_tensor(robot, policy_controller)
+                print_arm_diagnostics(robot, target_for_diag, elapsed)
             if count % 200 == 0:
                 print(f"[INFO]: t={elapsed:.2f}s", flush=True)
                 target_for_diag = hold_joint_pos if policy_controller is None else _policy_target_tensor(robot, policy_controller)
@@ -966,7 +1040,13 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene) -> None:
                 policy_controller.update(sim_dt)
 
             scene.write_data_to_sim()
-            sim.step()
+            # Render only at the control rate (every `decimation` physics steps), like the
+            # training env (render_interval=decimation). Rendering every 200Hz physics step
+            # — especially with the D455 cameras and a heavy background scene — drops the
+            # real-time factor far below 1 (slow-motion) and makes smooth motion look jittery
+            # in the viewport. Headless still renders when cameras/preview need the frame.
+            render_this_step = (count % RENDER_DECIMATION == 0) or _needs_camera_frame(count)
+            sim.step(render=render_this_step)
             scene.update(sim_dt)
             update_depth_preview(scene)
             if count == 30 or (args_cli.save_camera_frames and count > 0 and count % 300 == 0):
@@ -989,9 +1069,24 @@ def main() -> None:
     sim = SimulationContext(sim_cfg)
     sim.set_camera_view([2.25, -2.0, 1.65], [0.55, 0.0, 0.45])
 
+    if args_cli.ros2:
+        from isaacsim.core.utils.extensions import enable_extension
+        enable_extension("isaacsim.ros2.bridge")
+
     scene_cfg = B2ArxManipulationSceneCfg(num_envs=args_cli.num_envs, env_spacing=args_cli.env_spacing)
     scene = InteractiveScene(scene_cfg)
     strip_d455_physics_apis()
+
+    if args_cli.ros2:
+        import ros2_bridge
+        ros2_bridge.setup_d455_ros2_publishers(
+            color_camera_prim_path=D455_COLOR_CAMERA_PRIM_PATH,
+            domain_id=args_cli.ros2_domain_id,
+            width=D455_IMAGE_WIDTH, height=D455_IMAGE_HEIGHT,
+        )
+        ros2_bridge.setup_tag_tf_subscriber(domain_id=args_cli.ros2_domain_id)
+        print(f"[INFO]: ROS2 bridge active, domain={args_cli.ros2_domain_id}, "
+              f"publishing {ros2_bridge.COLOR_IMAGE_TOPIC}", flush=True)
 
     sim.reset()
     run_simulator(sim, scene)
