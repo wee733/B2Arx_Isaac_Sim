@@ -20,13 +20,18 @@ def test_tag_identity_matches_apriltag_tf_child_frame():
     assert ros2_bridge.TAG_TF_CHILD_FRAME == "tag36h11:0"
 
 
-def test_build_tag_frame_names_map_order_is_prim_then_frame():
-    # 顺序必须 [prim_path, frame_id] (本机 rst + test_subscribers.py 验证),
-    # 反了 marker 永不动
+def test_build_tag_frame_names_map_maps_parent_and_child_prim_then_frame():
+    # frameNamesMap 每对是 [prim_path, frame_id] (本机 rst + test_subscribers.py 验证),
+    # 且 parent(相机 frame) 和 child(tag) 都要在 map 里, 否则节点找不到 parent 参考系 marker 不动。
+    cam = "/World/envs/env_0/Robot/R5a_link6/D455/RSD455/Camera_OmniVision_OV9782_Color"
     result = ros2_bridge.build_tag_frame_names_map(
         marker_prim_path="/World/envs/env_0/TagMarker",
+        color_camera_prim_path=cam,
     )
-    assert result == ["/World/envs/env_0/TagMarker", "tag36h11:0"]
+    assert result == [
+        cam, "d455_color_optical_frame",          # parent: prim 在前, frame 在后
+        "/World/envs/env_0/TagMarker", "tag36h11:0",  # child: 同序
+    ]
     assert len(result) % 2 == 0  # frameNamesMap 必须偶数长度
 
 
