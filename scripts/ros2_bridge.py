@@ -165,7 +165,7 @@ def setup_tag_tf_subscriber(
                 ("Context.inputs:useDomainIDEnvVar", False),
                 (
                     "SubTF.inputs:frameNamesMap",
-                    build_tag_frame_names_map(marker_prim_path, color_camera_prim_path),
+                    build_tag_frame_names_map(marker_prim_path, color_optical_prim_path),
                 ),
             ],
         },
