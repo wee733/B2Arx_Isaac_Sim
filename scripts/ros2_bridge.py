@@ -21,16 +21,30 @@ TAG_TF_CHILD_FRAME = f"{TAG_FAMILY}:{TAG_ID}"
 # 默认 marker prim (num_envs=1; spec §7 R6 多 env 不在 V1 范围)
 DEFAULT_TAG_MARKER_PRIM = "/World/envs/env_0/TagMarker"
 
+# parent frame (d455_color_optical_frame) 对应的相机 prim。AprilTag 的 /tf 是 tag 相对
+# 这个 frame 的位姿, SubscribeTransformTree 需要 parent 也在 frameNamesMap 里才能把 tag
+# 位姿换算到世界坐标写进 marker (官方 test_subscribers.py 的 map 含 parent+child 两项)。
+DEFAULT_COLOR_CAMERA_PRIM = (
+    "/World/envs/env_0/Robot/R5a_link6/D455/RSD455/Camera_OmniVision_OV9782_Color"
+)
 
-def build_tag_frame_names_map(marker_prim_path: str) -> list[str]:
+
+def build_tag_frame_names_map(marker_prim_path: str, color_camera_prim_path: str) -> list[str]:
     """构造 ROS2SubscribeTransformTree.frameNamesMap。
 
     顺序是 [prim_path, frame_id, ...] (偶数长度)。本机验证来源:
     docs/ogn/OgnROS2SubscribeTransformTree.rst:41 ("[prim_path_0, frame_name_0, ...]")
     + tests/test_subscribers.py:555 (["/World","world","/World/cube","cube"])。
-    顺序写反 (frame_id 在前) 会让 TF 套不到 prim, marker 永不动。
+
+    **parent + child 都要映射**: AprilTag 的 /tf 里 frame_id=d455_color_optical_frame
+    (parent)、child_frame_id=tag36h11:0。官方测试的 map 同时给了 parent("/World"↔"world")
+    和 child("/World/cube"↔"cube")。只给 child 会让节点找不到 parent 参考系, marker 不动
+    (spec R1 验证: parent 必须在 map 里)。顺序写反 (frame_id 在前) 同样会断链。
     """
-    return [marker_prim_path, TAG_TF_CHILD_FRAME]
+    return [
+        color_camera_prim_path, COLOR_OPTICAL_FRAME,  # parent: 相机 optical frame
+        marker_prim_path, TAG_TF_CHILD_FRAME,          # child: tag
+    ]
 
 
 PUB_GRAPH_PATH = "/World/B2ArxROS2PubGraph"
@@ -87,11 +101,16 @@ def setup_d455_ros2_publishers(color_camera_prim_path, domain_id, width, height)
     return PUB_GRAPH_PATH
 
 
-def setup_tag_tf_subscriber(domain_id, marker_prim_path=DEFAULT_TAG_MARKER_PRIM):
+def setup_tag_tf_subscriber(
+    domain_id,
+    marker_prim_path=DEFAULT_TAG_MARKER_PRIM,
+    color_camera_prim_path=DEFAULT_COLOR_CAMERA_PRIM,
+):
     """建订阅 action graph: 收 /tf, 按 frameNamesMap 把 tag child frame 套到 marker prim。
 
     ROS2SubscribeTransformTree 不是把 TF 读进 Python, 而是用 GfTransform/UsdGeomXformable
-    把收到的 TF 直接写进 prim 的变换 (spec §1)。所以回路通 = marker prim 移动。
+    把收到的 TF 直接写进 prim 的变换 (spec §1)。frameNamesMap 同时映射 parent(相机 frame)
+    和 child(tag), 否则节点找不到 parent 参考系, marker 不动。所以回路通 = marker prim 移动。
     """
     import omni.graph.core as og
 
@@ -110,7 +129,10 @@ def setup_tag_tf_subscriber(domain_id, marker_prim_path=DEFAULT_TAG_MARKER_PRIM)
             og.Controller.Keys.SET_VALUES: [
                 ("Context.inputs:domain_id", int(domain_id)),
                 ("Context.inputs:useDomainIDEnvVar", False),
-                ("SubTF.inputs:frameNamesMap", build_tag_frame_names_map(marker_prim_path)),
+                (
+                    "SubTF.inputs:frameNamesMap",
+                    build_tag_frame_names_map(marker_prim_path, color_camera_prim_path),
+                ),
             ],
         },
     )
