@@ -531,16 +531,8 @@ class B2ArxManipulationSceneCfg(InteractiveSceneCfg):
     )
 
     # --- ROS2 回路 V1: 被检测的虚拟 AprilTag + 回流 marker (spec §2.3) ---
-    # size 0.1m 必须 == Thor launch 的 size 参数 (spec §4, R7); 摆在工作台 D455 视野内。
-    apriltag_board = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/AprilTag",
-        spawn=sim_utils.CuboidCfg(
-            size=(0.1, 0.1, 0.004),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.9, 0.9), roughness=0.9),
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(1.16, 0.0, 0.455)),
-    ) if args_cli.ros2 else None
-
+    # AprilTag 板用带显式 UV 的 quad mesh, 在 spawn_apriltag_board() 里建 (CuboidCfg 是
+    # UsdGeom.Cube 没有 UV, OmniPBR 三平面投影在 0.1m 小面上贴不出 tag → 白板)。这里只留 marker。
     # ROS2SubscribeTransformTree 把 Thor 回流的 tag 位姿写到这个 prim (spec §1)。
     # 初始放在 (0,0,1.5) 离谱位置, 回路通时能明显看到它"跳"到 tag 处。
     tag_marker = AssetBaseCfg(
@@ -658,15 +650,15 @@ def strip_d455_physics_apis() -> None:
         )
 
 
-def bind_apriltag_texture() -> None:
-    """Paint the tag36h11:0 texture onto each env's AprilTag Cuboid (--ros2 only).
+def spawn_apriltag_board() -> None:
+    """Spawn a flat quad with explicit UVs per env and paint tag36h11:0 on it (--ros2 only).
 
-    The Cuboid is spawned with a plain white PreviewSurface placeholder (cfg layer has no
-    diffuse-texture hook), so we create an OmniPBR MDL material, point its diffuse_texture
-    at the upscaled tag PNG, and bind it to the prim. API verified against Isaac's own
-    isaacsim.replicator.behavior scene_utils.create_mdl_material / texture_randomizer.
-    project_uvw=True so the planar UV maps the full tag across the top face; texture_scale
-    (1,1) = one tag per face. Without this the board stays blank and AprilTag sees nothing.
+    Why a hand-built mesh, not CuboidCfg: CuboidCfg makes a UsdGeom.Cube which has NO UV
+    coords, so an OmniPBR diffuse_texture can only fall back to triplanar projection — on a
+    0.1m face that shows a tiny crop and reads as blank. Here we build a UsdGeom.Mesh quad
+    with st (UV) [0..1] mapped to the four corners, so the full tag maps exactly onto the
+    face. size 0.1m must == Thor launch `size` (spec §4, R7). API (CreateMdlMaterialPrim /
+    OmniPBR diffuse_texture / MaterialBindingAPI) verified vs isaacsim.replicator.behavior.
     """
     if not args_cli.ros2:
         return
@@ -675,32 +667,48 @@ def bind_apriltag_texture() -> None:
         return
     import omni.kit.commands
     import omni.usd
-    from pxr import Sdf, UsdShade
+    from pxr import Gf, Sdf, UsdGeom, UsdShade, Vt
 
     stage = omni.usd.get_context().get_stage()
     texture_asset = str(APRILTAG_TEXTURE_PATH)
-    bound = 0
+    half = 0.05  # 0.1m tag, centered
+    pos = Gf.Vec3d(1.16, 0.0, 0.455)
+    spawned = 0
     for env_index in range(args_cli.num_envs):
         board_path = f"/World/envs/env_{env_index}/AprilTag"
-        board_prim = stage.GetPrimAtPath(board_path)
-        if not board_prim.IsValid():
-            continue
+        mesh = UsdGeom.Mesh.Define(stage, board_path)
+        # Quad in the XY plane, facing +Z (up toward the wrist camera looking down).
+        mesh.CreatePointsAttr([
+            Gf.Vec3f(-half, -half, 0.0), Gf.Vec3f(half, -half, 0.0),
+            Gf.Vec3f(half, half, 0.0), Gf.Vec3f(-half, half, 0.0),
+        ])
+        mesh.CreateFaceVertexCountsAttr([4])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        mesh.CreateExtentAttr([Gf.Vec3f(-half, -half, 0.0), Gf.Vec3f(half, half, 0.0)])
+        # Explicit UV (st) per face-vertex: full [0,1] square -> the whole tag on the face.
+        st = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+        )
+        st.Set(Vt.Vec2fArray([Gf.Vec2f(0, 0), Gf.Vec2f(1, 0), Gf.Vec2f(1, 1), Gf.Vec2f(0, 1)]))
+        UsdGeom.Xformable(mesh).AddTranslateOp().Set(pos)
+
         mtl_path = f"{board_path}/AprilTagMaterial"
         omni.kit.commands.execute(
             "CreateMdlMaterialPrim", mtl_url="OmniPBR.mdl", mtl_name="OmniPBR", mtl_path=mtl_path
         )
         mtl_prim = stage.GetPrimAtPath(mtl_path)
         shader = UsdShade.Shader(omni.usd.get_shader_from_material(mtl_prim, get_prim=True))
+        # project_uvw=False -> use the mesh st coords we just authored (not triplanar).
         shader.CreateInput("diffuse_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(texture_asset))
-        shader.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(True)
-        shader.CreateInput("texture_scale", Sdf.ValueTypeNames.Float2).Set((1.0, 1.0))
-        UsdShade.MaterialBindingAPI.Apply(board_prim)
-        UsdShade.MaterialBindingAPI(board_prim).Bind(
+        shader.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(False)
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim())
+        UsdShade.MaterialBindingAPI(mesh.GetPrim()).Bind(
             UsdShade.Material(mtl_prim), UsdShade.Tokens.strongerThanDescendants
         )
-        bound += 1
-    if bound:
-        print(f"[INFO]: AprilTag tag36h11:0 texture bound on {bound} board(s).", flush=True)
+        spawned += 1
+    if spawned:
+        print(f"[INFO]: AprilTag tag36h11:0 board spawned on {spawned} env(s) at {tuple(pos)}.", flush=True)
+
 
 
 def set_viewport_camera() -> None:
@@ -1130,7 +1138,7 @@ def main() -> None:
     scene_cfg = B2ArxManipulationSceneCfg(num_envs=args_cli.num_envs, env_spacing=args_cli.env_spacing)
     scene = InteractiveScene(scene_cfg)
     strip_d455_physics_apis()
-    bind_apriltag_texture()
+    spawn_apriltag_board()
 
     if args_cli.ros2:
         import ros2_bridge
