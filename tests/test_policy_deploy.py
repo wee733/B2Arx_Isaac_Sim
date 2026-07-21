@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,6 +14,7 @@ from scripts.policy_deploy.runtime import (
     DeployPolicyRuntime,
     build_obs_termwise,
     gait_phase_train_semantics,
+    sanitize_velocity_command,
 )
 from scripts.policy_deploy.fsm import (
     ArmLocoCommand,
@@ -167,6 +169,19 @@ def test_gait_phase_uses_training_planar_velocity_semantics() -> None:
     assert sincos == pytest.approx([math.sin(2 * math.pi * phase), math.cos(2 * math.pi * phase)])
 
 
+def test_sanitize_velocity_command_matches_real_deployment_minimum_speed() -> None:
+    assert sanitize_velocity_command(0.0, 0.0, 0.2) == pytest.approx((0.0, 0.0, 0.2))
+    assert sanitize_velocity_command(0.05, 0.0, 0.2) == pytest.approx((0.25, 0.0, 0.2))
+    assert sanitize_velocity_command(0.12, 0.0, 0.0) == pytest.approx((0.25, 0.0, 0.0))
+
+    vx, vy, wz = sanitize_velocity_command(0.12, 0.16, 0.3)
+    assert math.hypot(vx, vy) == pytest.approx(0.25)
+    assert vx / vy == pytest.approx(0.12 / 0.16)
+    assert wz == pytest.approx(0.3)
+
+    assert sanitize_velocity_command(0.3, 0.0, 0.0) == pytest.approx((0.3, 0.0, 0.0))
+
+
 @dataclass
 class DummyState:
     q: np.ndarray
@@ -293,10 +308,20 @@ def test_arm_loco_enter_and_run_match_deploy_fsm(tmp_path) -> None:
     assert loco.last_raw_action[16] == pytest.approx(1.0)
     assert loco.last_raw_action[17] == pytest.approx(0.0)
     assert q_target[0] == pytest.approx(0.1)
-    expected_joint5 = rt.joint_hi[16]
-    alpha = 1.0 - math.exp(-1.0)
-    assert q_target[16] == pytest.approx(rt.offset[16] + alpha * (expected_joint5 - rt.offset[16]))
+    assert q_target[16] == pytest.approx(rt.offset[16])
     assert q_target[17] == pytest.approx(rt.offset[17])
+
+    # One policy inference produces a held decoded arm target. The EMA then
+    # advances four times at the 200 Hz physics rate before the next inference.
+    first = loco.advance_arm_ema(0.005)
+    for _ in range(3):
+        final = loco.advance_arm_ema(0.005)
+    expected_joint5 = rt.joint_hi[16]
+    alpha_physics = 1.0 - math.exp(-0.005 / 0.02)
+    alpha_four_steps = 1.0 - math.exp(-0.02 / 0.02)
+    assert first[4] == pytest.approx(rt.offset[16] + alpha_physics * (expected_joint5 - rt.offset[16]))
+    assert final[4] == pytest.approx(rt.offset[16] + alpha_four_steps * (expected_joint5 - rt.offset[16]))
+    assert rt.infer_count == 1
 
 
 def test_ctrl_fsm_shared_safety_and_transition_order(tmp_path) -> None:
@@ -465,12 +490,19 @@ def test_isaac_controller_defaults_and_joint_order() -> None:
     assert DEFAULT_POLICY_DEPLOY_YAML.name == "deploy.yaml"
     assert DEFAULT_POLICY_ONNX.is_file()
     assert DEFAULT_POLICY_DEPLOY_YAML.is_file()
-    assert CONTROLLED_JOINT_NAMES[:3] == (
+    assert CONTROLLED_JOINT_NAMES == (
         "b2_description_FL_hip_joint",
         "b2_description_FL_thigh_joint",
         "b2_description_FL_calf_joint",
-    )
-    assert CONTROLLED_JOINT_NAMES[12:18] == (
+        "b2_description_FR_hip_joint",
+        "b2_description_FR_thigh_joint",
+        "b2_description_FR_calf_joint",
+        "b2_description_RL_hip_joint",
+        "b2_description_RL_thigh_joint",
+        "b2_description_RL_calf_joint",
+        "b2_description_RR_hip_joint",
+        "b2_description_RR_thigh_joint",
+        "b2_description_RR_calf_joint",
         "R5a_joint1",
         "R5a_joint2",
         "R5a_joint3",
@@ -478,6 +510,30 @@ def test_isaac_controller_defaults_and_joint_order() -> None:
         "R5a_joint5",
         "R5a_joint6",
     )
+
+
+def test_basic_locomotion_runtime_contract_and_onnx_interface() -> None:
+    bundle = Path(__file__).resolve().parents[1] / "models" / "basic_locomotion"
+    rt = DeployPolicyRuntime(
+        bundle / "params" / "deploy.yaml",
+        onnx_path=bundle / "exported" / "policy_full.onnx",
+    )
+
+    assert rt.single_obs_dim == 73
+    assert rt.frame_stack == 30
+    assert rt.history_dim == 2190
+    assert rt.action_dim == 18
+    assert rt.step_dt == pytest.approx(0.02)
+    assert rt.period == pytest.approx(0.64)
+    assert rt.scale.tolist() == pytest.approx([0.25] * 18)
+    assert rt.offset.tolist() == pytest.approx(
+        [0.15, 0.67, -1.32, -0.15, 0.67, -1.32, 0.15, 0.67, -1.32, -0.15, 0.67, -1.32,
+         0.0, 1.0, 0.8, 0.0, 0.0, 0.0]
+    )
+    ranges = rt.deploy["commands"]["base_velocity"]["ranges"]
+    assert ranges["lin_vel_x"] == pytest.approx([-0.8, 0.8])
+    assert ranges["lin_vel_y"] == pytest.approx([-0.5, 0.5])
+    assert ranges["ang_vel_z"] == pytest.approx([-0.6, 0.6])
 
 
 def test_controlled_joint_indices_preserve_policy_order() -> None:

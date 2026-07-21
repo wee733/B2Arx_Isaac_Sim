@@ -1,0 +1,30 @@
+# Default Nav2 locomotion profile. All local paths are relative to this file,
+# so the repository can be cloned anywhere.
+policy:
+  name: basic_locomotion
+  run_dir: ../../models/basic_locomotion
+  onnx: ../../models/basic_locomotion/exported/policy_full.onnx
+  deploy_yaml: ../../models/basic_locomotion/params/deploy.yaml
+  checkpoint: ../../models/basic_locomotion/basic_locomotion_model.pt
+  manifest: ../../models/basic_locomotion/bundle_manifest.txt
+
+deploy:
+  start_state: ArmLoco
+  auto_arm_loco: true
+  ee_sphere: [0.36, 0.56, 0.0]
+  command: [0.0, 0.0, 0.0]
+  arm_ema_tau: 0.02
+
+input:
+  backend: ros2_twist
+  ros2_twist:
+    topic: /cmd_vel
+    heartbeat_topic: /cmd_vel_heartbeat
+    timeout_s: 0.5
+    passive_timeout_s: 5.0
+    max_vx: 0.8
+    max_vy: 0.5
+    max_wz: 0.6
+    min_planar_speed: 0.25
+    min_turn_radius: 0.42
+    zero_epsilon: 0.01

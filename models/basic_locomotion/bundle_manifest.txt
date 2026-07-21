@@ -1,0 +1,11 @@
+# Portable baseline deployment bundle for this repository.
+# The three SHA-256 values are verified before inference starts.
+bundle_schema=1
+model_id=basic_locomotion
+checkpoint=basic_locomotion_model.pt
+run_dir=.
+checkpoint_sha256=dab9197db9ecec7c1496d23e548b02c1a7e22e17badbd075d5270f5cdb9630b4
+policy_full_onnx_sha256=10b79e8531fdd1cb455d20c2079fe0c5b6dea6e9797dacf2061584e143c48f60
+deploy_yaml_sha256=dac88692cf90dc173a25ae3144a7ded5ff583075c98666858fbbcf6b8fa652d6
+source_checkpoint_name=model_29999.pt
+source_run_id=2026-07-13_22-38-46_resume_17000_to_30000
