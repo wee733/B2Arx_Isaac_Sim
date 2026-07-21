@@ -1,0 +1,62 @@
+# Overrides for the official Stereolabs zed_wrapper simulation node.
+#
+# Values intentionally mirror NVIDIA Isaac ROS release-4.5:
+#   isaac_ros_nvblox/nvblox_examples_bringup/config/sensors/zed_common.yaml
+#   isaac_ros_nvblox/nvblox_examples_bringup/config/sensors/zedx.yaml
+#
+# The wrapper launch must additionally set:
+#   camera_model:=zedx sim_mode:=true use_sim_time:=true sim_port:=30000
+/**:
+  ros__parameters:
+    general:
+      pub_resolution: "CUSTOM"
+      pub_downscale_factor: 2.0
+      pub_frame_rate: 30.0
+
+    video:
+      publish_rgb: true
+      publish_left_right: true
+      publish_raw: true
+
+    sensors:
+      # Official Stereolabs local-stream/simulation workaround: query sensor
+      # data at the image timestamp instead of from the independent CURRENT
+      # polling thread. This setting must be paired with GEN_1.
+      sensors_image_sync: true
+      publish_mag: false
+      publish_baro: false
+      publish_temp: false
+
+    depth:
+      depth_mode: "ULTRA"
+      depth_stabilization: 1
+      openni_depth_mode: false
+      min_depth: 0.5
+      max_depth: 5.0
+      point_cloud_freq: 10.0
+      depth_confidence: 10
+      depth_texture_conf: 100
+      remove_saturated_areas: true
+
+    pos_tracking:
+      pos_tracking_enabled: true
+      # Required by the official local-stream/simulation workaround when
+      # sensors_image_sync is enabled.
+      pos_tracking_mode: "GEN_1"
+      imu_fusion: true
+      publish_tf: true
+      publish_map_tf: true
+      map_frame: "map"
+      odometry_frame: "odom"
+      set_as_static: false
+      set_gravity_as_origin: true
+      floor_alignment: false
+
+    mapping:
+      mapping_enabled: false
+
+    debug:
+      # The wrapper 5.4 NITROS image publisher triggers a reproducible CUDA
+      # 700 after sustained simulated streaming on this RTX 5090/CUDA 13 host.
+      # This changes transport only; ZED depth/VIO and Nvblox remain official.
+      disable_nitros: true

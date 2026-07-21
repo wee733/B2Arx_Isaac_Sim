@@ -17,10 +17,16 @@ def make_command_source(input_settings, deploy_settings) -> CommandSource:
     backend = input_settings.backend
     if backend == "scripted":
         return ScriptedCommandSource(command=deploy_settings.command)
+    if backend == "ros2_twist":
+        # Lazy import: the module itself is normal-Python safe, while its
+        # default reader imports OmniGraph only when instantiated in Isaac Sim.
+        from .ros2_twist import Ros2TwistCommandSource
+
+        return Ros2TwistCommandSource(input_settings.ros2_twist)
     if backend not in _DEVICE_BACKENDS:
         raise ValueError(
             f"unknown input backend {backend!r}; expected one of "
-            f"scripted, {', '.join(_DEVICE_BACKENDS)}"
+            f"scripted, ros2_twist, {', '.join(_DEVICE_BACKENDS)}"
         )
     # Lazy import: only touch carb/omni when a real device is requested.
     from .devices import GamepadCommandSource, KeyboardCommandSource

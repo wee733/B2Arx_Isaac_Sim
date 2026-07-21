@@ -22,6 +22,32 @@ OBS_TERM_ORDER = [
 ]
 
 LOCKED_JOINT6_ACTION_INDEX = 17
+WALK_DEADBAND = 0.1
+# The training command sampler and both established deployment paths floor any
+# intentional planar command to 0.25 m/s.  The policy has not seen walking
+# commands in (0, 0.25), so Isaac must preserve the same input contract.
+MIN_WALK_SPEED = 0.25
+
+
+def sanitize_velocity_command(
+    vx: float,
+    vy: float,
+    wz: float,
+    *,
+    min_speed: float = MIN_WALK_SPEED,
+) -> tuple[float, float, float]:
+    """Match the real/MuJoCo minimum planar walking-speed contract."""
+    vx = float(vx)
+    vy = float(vy)
+    wz = float(wz)
+    speed = math.hypot(vx, vy)
+    if speed == 0.0:
+        return 0.0, 0.0, wz
+    if speed < float(min_speed):
+        scale = float(min_speed) / speed
+        vx *= scale
+        vy *= scale
+    return vx, vy, wz
 
 
 def gait_phase_train_semantics(
@@ -34,7 +60,7 @@ def gait_phase_train_semantics(
 ) -> tuple[list[float], float]:
     """Training semantics: gait phase advances only for planar walking commands."""
     del wz
-    walking = math.hypot(float(vx), float(vy)) > 0.1
+    walking = math.hypot(float(vx), float(vy)) > WALK_DEADBAND
     if walking:
         phase = (float(prev_phase) + float(control_dt) / float(period)) % 1.0
     else:
@@ -88,9 +114,15 @@ class DeployPolicyRuntime:
             self.deploy = yaml.safe_load(f)
 
         obs_h = self.deploy["observations"]["obs_history"]
-        self.obs_terms = [(name, obs_h[name]["scale"]) for name in OBS_TERM_ORDER if name in obs_h]
-        if not self.obs_terms:
-            raise ValueError("deploy.yaml observations.obs_history does not contain supported terms")
+        missing_obs_terms = [name for name in OBS_TERM_ORDER if name not in obs_h]
+        if missing_obs_terms:
+            raise ValueError(f"deploy.yaml observations.obs_history is missing terms: {missing_obs_terms}")
+        unexpected_obs_terms = set(obs_h) - {"use_gym_history", *OBS_TERM_ORDER}
+        if unexpected_obs_terms:
+            raise ValueError(
+                f"deploy.yaml observations.obs_history has unsupported terms: {sorted(unexpected_obs_terms)}"
+            )
+        self.obs_terms = [(name, obs_h[name]["scale"]) for name in OBS_TERM_ORDER]
         self.single_obs_dim = int(sum(len(scale) for _, scale in self.obs_terms))
         self.frame_stack = int(obs_h[self.obs_terms[0][0]].get("history_length", 30))
 
@@ -122,6 +154,8 @@ class DeployPolicyRuntime:
 
     def _validate_shapes(self) -> None:
         expected = self.action_dim
+        if expected != 18:
+            raise ValueError(f"action dimension must be 18, got {expected}")
         for name, arr in (
             ("offset", self.offset),
             ("joint_lo", self.joint_lo),
@@ -133,6 +167,18 @@ class DeployPolicyRuntime:
                 raise ValueError(f"{name} must have shape ({expected},), got {arr.shape}")
         if self.single_obs_dim != 73:
             raise ValueError(f"single observation dimension must be 73, got {self.single_obs_dim}")
+        history_lengths = {
+            name: int(self.deploy["observations"]["obs_history"][name].get("history_length", 30))
+            for name in OBS_TERM_ORDER
+        }
+        if set(history_lengths.values()) != {self.frame_stack}:
+            raise ValueError(f"observation history lengths must match: {history_lengths}")
+        if self.frame_stack <= 0:
+            raise ValueError(f"history length must be positive, got {self.frame_stack}")
+        if self.step_dt <= 0.0:
+            raise ValueError(f"step_dt must be positive, got {self.step_dt}")
+        if self.period <= 0.0:
+            raise ValueError(f"gait period must be positive, got {self.period}")
 
     def load_onnx(self, onnx_path: str | Path) -> None:
         try:
@@ -144,8 +190,28 @@ class DeployPolicyRuntime:
 
         path = str(Path(onnx_path).expanduser().resolve())
         self.sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
-        self.in_name = self.sess.get_inputs()[0].name
-        self.out_name = self.sess.get_outputs()[0].name
+        inputs = self.sess.get_inputs()
+        outputs = self.sess.get_outputs()
+        if len(inputs) != 1 or len(outputs) != 1:
+            raise ValueError(
+                f"policy ONNX must have exactly one input and one output, got {len(inputs)} and {len(outputs)}"
+            )
+        expected_input_shape = [1, self.history_dim]
+        expected_output_shape = [1, self.action_dim]
+        if list(inputs[0].shape) != expected_input_shape:
+            raise ValueError(
+                f"policy ONNX input must have shape {expected_input_shape}, got {inputs[0].shape}"
+            )
+        if list(outputs[0].shape) != expected_output_shape:
+            raise ValueError(
+                f"policy ONNX output must have shape {expected_output_shape}, got {outputs[0].shape}"
+            )
+        if inputs[0].type != "tensor(float)" or outputs[0].type != "tensor(float)":
+            raise ValueError(
+                f"policy ONNX input/output must be tensor(float), got {inputs[0].type} and {outputs[0].type}"
+            )
+        self.in_name = inputs[0].name
+        self.out_name = outputs[0].name
 
     def reset_history(self, current_obs) -> None:
         obs = self._validate_obs(current_obs)

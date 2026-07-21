@@ -5,7 +5,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .runtime import DeployPolicyRuntime, build_obs_termwise, gait_phase_train_semantics
+from .runtime import (
+    DeployPolicyRuntime,
+    build_obs_termwise,
+    gait_phase_train_semantics,
+    sanitize_velocity_command,
+)
 
 
 @dataclass
@@ -218,6 +223,7 @@ class ArmLocoState(BaseState):
         self.arm_ema_tau = float(arm_ema_tau)
         self.last_raw_action = np.zeros(self.rt.action_dim, dtype=np.float32)
         self.arm_smooth: np.ndarray | None = None
+        self.arm_decoded_target: np.ndarray | None = None
         self._phase = 0.0
         self._ee_repeat_acc = 0.0
 
@@ -239,6 +245,15 @@ class ArmLocoState(BaseState):
         self._phase = 0.0
         self._ee_repeat_acc = 0.0
         self.arm_smooth = self.rt.offset[self.ARM_SLICE].copy()
+        self.arm_decoded_target = self.arm_smooth.copy()
+
+    def advance_arm_ema(self, dt: float) -> np.ndarray:
+        """Advance the arm filter at the physics rate used during training."""
+        if self.arm_smooth is None or self.arm_decoded_target is None:
+            raise RuntimeError("ArmLocoState.enter() must be called before advancing arm EMA")
+        alpha = 1.0 if self.arm_ema_tau <= 0.0 else 1.0 - math.exp(-float(dt) / self.arm_ema_tau)
+        self.arm_smooth = self.arm_smooth + alpha * (self.arm_decoded_target - self.arm_smooth)
+        return self.arm_smooth.copy()
 
     def _build_obs(self, state, raw_action, phase_sincos, vx: float, vy: float, wz: float) -> np.ndarray:
         projected_gravity = _projected_gravity_from_xyzw(np.asarray(state.quat_xyzw, dtype=np.float32))
@@ -274,21 +289,24 @@ class ArmLocoState(BaseState):
             self.buf.reset_to_init()
 
         state = plant.read_state()
+        vx, vy, wz = sanitize_velocity_command(command.vx, command.vy, command.wz)
         sincos, self._phase = gait_phase_train_semantics(
             self._phase,
-            command.vx,
-            command.vy,
-            command.wz,
+            vx,
+            vy,
+            wz,
             self.control_dt,
             self.rt.period,
         )
-        obs = self._build_obs(state, self.last_raw_action, sincos, command.vx, command.vy, command.wz)
+        obs = self._build_obs(state, self.last_raw_action, sincos, vx, vy, wz)
         self.rt.push(obs)
         raw = self.rt.lock_action(self.rt.infer())
         self.last_raw_action = raw
         q_target = self.rt.decode(raw)
-        alpha = 1.0 if self.arm_ema_tau <= 0.0 else 1.0 - math.exp(-self.control_dt / self.arm_ema_tau)
-        self.arm_smooth = self.arm_smooth + alpha * (q_target[self.ARM_SLICE] - self.arm_smooth)
+        # Training decodes a new target at 50 Hz, then applies the arm EMA on
+        # each 200 Hz physics step. Store the new target here; the Isaac host
+        # advances the filter with the actual sim_dt before every physics step.
+        self.arm_decoded_target = q_target[self.ARM_SLICE].copy()
         q_target[self.ARM_SLICE] = self.arm_smooth
         return q_target
 

@@ -3,8 +3,12 @@ __pycache__/
 .pytest_cache/
 
 logs/
+log/
 outputs/
 *.log
+ros_ws/build*/
+ros_ws/install*/
+ros_ws/log*/
 
 .codegraph/
 .vscode/
@@ -13,4 +17,3 @@ assets/container_storage/
 assets/paper_cup/
 docs/*
 asserts.zip
-tests/

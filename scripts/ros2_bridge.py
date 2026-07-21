@@ -1,4 +1,4 @@
-"""OmniGraph ROS2 接线 (B2ARX D455 → Thor → 回流). 不依赖 Python rclpy。
+"""OmniGraph ROS2 wiring for B2ARX cameras, TF and the AprilTag return path.
 
 Isaac Sim 自带 jazzy ROS2 库, C++ plugin 直接用; 在 py3.11 的 isaaclab 环境里
 import rclpy 会因 ABI 不匹配崩溃, 所以发布与订阅全部走 OmniGraph 节点。
@@ -79,15 +79,96 @@ def setup_color_optical_frame_prim(color_camera_prim_path=DEFAULT_COLOR_CAMERA_P
     return optical_path
 
 
-PUB_GRAPH_PATH = "/World/B2ArxROS2PubGraph"
+CLOCK_GRAPH_PATH = "/World/B2ArxROS2ClockGraph"
+PUB_GRAPH_PATH = "/World/B2ArxROS2PubGraph"  # retained name for the D455 graph
 SUB_GRAPH_PATH = "/World/B2ArxROS2SubGraph"
+CMD_VEL_GRAPH_PATH = "/World/B2ArxROS2CmdVelGraph"
+CMD_VEL_TOPIC = "/cmd_vel"
+CMD_VEL_HEARTBEAT_TOPIC = "/cmd_vel_heartbeat"
+
+
+def setup_ros2_clock(domain_id):
+    """Publish one simulation clock shared by every camera graph."""
+    import omni.graph.core as og
+
+    og.Controller.edit(
+        {"graph_path": CLOCK_GRAPH_PATH, "evaluator_name": "execution"},
+        {
+            og.Controller.Keys.CREATE_NODES: [
+                ("OnTick", "omni.graph.action.OnPlaybackTick"),
+                ("Context", "isaacsim.ros2.bridge.ROS2Context"),
+                ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
+                ("PublishClock", "isaacsim.ros2.bridge.ROS2PublishClock"),
+            ],
+            og.Controller.Keys.CONNECT: [
+                ("OnTick.outputs:tick", "PublishClock.inputs:execIn"),
+                ("Context.outputs:context", "PublishClock.inputs:context"),
+                ("ReadSimTime.outputs:simulationTime", "PublishClock.inputs:timeStamp"),
+            ],
+            og.Controller.Keys.SET_VALUES: [
+                ("Context.inputs:domain_id", int(domain_id)),
+                ("Context.inputs:useDomainIDEnvVar", False),
+                ("PublishClock.inputs:topicName", CLOCK_TOPIC),
+            ],
+        },
+    )
+    return CLOCK_GRAPH_PATH
+
+
+def setup_ros2_cmd_vel_subscriber(
+    domain_id,
+    topic_name=CMD_VEL_TOPIC,
+    heartbeat_topic_name=CMD_VEL_HEARTBEAT_TOPIC,
+):
+    """Subscribe to Nav2 Twist commands and an explicit transport heartbeat.
+
+    The Twist remains the unmodified navigation command.  A separate UInt32
+    sequence changes on every watchdog publication, so the policy can detect
+    message arrival even when every consecutive Twist is the same zero value.
+    """
+    if not str(topic_name).startswith("/"):
+        raise ValueError(f"cmd_vel topic must be absolute: {topic_name!r}")
+    if not str(heartbeat_topic_name).startswith("/"):
+        raise ValueError(f"cmd_vel heartbeat topic must be absolute: {heartbeat_topic_name!r}")
+
+    import omni.graph.core as og
+
+    og.Controller.edit(
+        {"graph_path": CMD_VEL_GRAPH_PATH, "evaluator_name": "execution"},
+        {
+            og.Controller.Keys.CREATE_NODES: [
+                ("OnTick", "omni.graph.action.OnPlaybackTick"),
+                ("Context", "isaacsim.ros2.bridge.ROS2Context"),
+                ("SubscribeTwist", "isaacsim.ros2.bridge.ROS2SubscribeTwist"),
+                ("SubscribeHeartbeat", "isaacsim.ros2.bridge.ROS2Subscriber"),
+            ],
+            og.Controller.Keys.CONNECT: [
+                ("OnTick.outputs:tick", "SubscribeTwist.inputs:execIn"),
+                ("OnTick.outputs:tick", "SubscribeHeartbeat.inputs:execIn"),
+                ("Context.outputs:context", "SubscribeTwist.inputs:context"),
+                ("Context.outputs:context", "SubscribeHeartbeat.inputs:context"),
+            ],
+            og.Controller.Keys.SET_VALUES: [
+                ("Context.inputs:domain_id", int(domain_id)),
+                ("Context.inputs:useDomainIDEnvVar", False),
+                ("SubscribeTwist.inputs:topicName", str(topic_name)),
+                ("SubscribeTwist.inputs:queueSize", 1),
+                ("SubscribeHeartbeat.inputs:messagePackage", "std_msgs"),
+                ("SubscribeHeartbeat.inputs:messageSubfolder", "msg"),
+                ("SubscribeHeartbeat.inputs:messageName", "UInt32"),
+                ("SubscribeHeartbeat.inputs:topicName", str(heartbeat_topic_name)),
+                ("SubscribeHeartbeat.inputs:queueSize", 1),
+            ],
+        },
+    )
+    return CMD_VEL_GRAPH_PATH
 
 
 def setup_d455_ros2_publishers(color_camera_prim_path, domain_id, width, height):
-    """建发布 action graph: /clock + color image + camera_info, 随 sim.step 自动 tick。
+    """Publish the existing wrist D455 color image and CameraInfo.
 
-    所有节点挂在 OnPlaybackTick 下; image 和 camera_info 共用同一 render product +
-    同一 OnPlaybackTick, 所以 timestamp 同帧, 满足 AprilTag 的 ExactTime 同步 (spec §4)。
+    Image and CameraInfo share one render product and playback tick, satisfying
+    AprilTag's ExactTime input. ``setup_ros2_clock`` owns the single /clock writer.
     """
     import omni.graph.core as og
 
@@ -97,28 +178,22 @@ def setup_d455_ros2_publishers(color_camera_prim_path, domain_id, width, height)
             og.Controller.Keys.CREATE_NODES: [
                 ("OnTick", "omni.graph.action.OnPlaybackTick"),
                 ("Context", "isaacsim.ros2.bridge.ROS2Context"),
-                ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
-                ("PublishClock", "isaacsim.ros2.bridge.ROS2PublishClock"),
                 ("CreateRP", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
                 ("CameraRgb", "isaacsim.ros2.bridge.ROS2CameraHelper"),
                 ("CameraInfo", "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
             ],
             og.Controller.Keys.CONNECT: [
-                ("OnTick.outputs:tick", "PublishClock.inputs:execIn"),
                 ("OnTick.outputs:tick", "CreateRP.inputs:execIn"),
                 ("CreateRP.outputs:execOut", "CameraRgb.inputs:execIn"),
                 ("CreateRP.outputs:execOut", "CameraInfo.inputs:execIn"),
-                ("Context.outputs:context", "PublishClock.inputs:context"),
                 ("Context.outputs:context", "CameraRgb.inputs:context"),
                 ("Context.outputs:context", "CameraInfo.inputs:context"),
-                ("ReadSimTime.outputs:simulationTime", "PublishClock.inputs:timeStamp"),
                 ("CreateRP.outputs:renderProductPath", "CameraRgb.inputs:renderProductPath"),
                 ("CreateRP.outputs:renderProductPath", "CameraInfo.inputs:renderProductPath"),
             ],
             og.Controller.Keys.SET_VALUES: [
                 ("Context.inputs:domain_id", int(domain_id)),
                 ("Context.inputs:useDomainIDEnvVar", False),
-                ("PublishClock.inputs:topicName", CLOCK_TOPIC),
                 ("CreateRP.inputs:cameraPrim", [color_camera_prim_path]),
                 ("CreateRP.inputs:width", int(width)),
                 ("CreateRP.inputs:height", int(height)),

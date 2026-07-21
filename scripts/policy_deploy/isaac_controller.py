@@ -20,9 +20,8 @@ from .runtime import DeployPolicyRuntime
 from .command_sources import CommandSource, ScriptedCommandSource
 
 
-DEFAULT_POLICY_RUN_DIR = Path(
-    "/home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02"
-)
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_POLICY_RUN_DIR = REPOSITORY_ROOT / "models" / "basic_locomotion"
 DEFAULT_POLICY_ONNX = DEFAULT_POLICY_RUN_DIR / "exported" / "policy_full.onnx"
 DEFAULT_POLICY_DEPLOY_YAML = DEFAULT_POLICY_RUN_DIR / "params" / "deploy.yaml"
 
@@ -214,6 +213,7 @@ class B2ArxIsaacPolicyController:
         return self.runtime.step_dt
 
     def reset(self) -> None:
+        self.command_source.reset()
         self._control_acc = 0.0
         self._state_elapsed = 0.0
         self._last_state_name = self.fsm.current_name
@@ -229,11 +229,21 @@ class B2ArxIsaacPolicyController:
         self.command_source.close()
 
     def update(self, sim_dt: float) -> None:
-        self._control_acc += float(sim_dt)
+        sim_dt = float(sim_dt)
+        self._control_acc += sim_dt
         if self._control_acc + 1.0e-9 >= self.runtime.step_dt:
             self._control_acc -= self.runtime.step_dt
             self._tick_control()
+        self._advance_arm_ema(sim_dt)
         self.plant.apply_targets(self._last_q_target, self._default_gripper_target())
+
+    def _advance_arm_ema(self, sim_dt: float) -> None:
+        if self.fsm.current_name != "ArmLoco":
+            return
+        loco = self.fsm.states.get("ArmLoco")
+        if not isinstance(loco, ArmLocoState):
+            return
+        self._last_q_target[ArmLocoState.ARM_SLICE] = loco.advance_arm_ema(sim_dt)
 
     def _tick_control(self) -> None:
         state = self.plant.read_state()

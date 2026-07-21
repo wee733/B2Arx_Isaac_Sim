@@ -1,32 +1,25 @@
 # Runnable deploy config for --control_mode policy. Direct-ArmLoco smoke default.
+# Local paths are resolved relative to this YAML file.
 policy:
-  run_dir: /home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02
-  # Runtime loads ONNX, not the .pt checkpoint. Export the checkpoint first:
-  #   cd /home/lbz/b2arx
-  #   conda activate isaaclab
-  #   /home/lbz/IsaacLab/isaaclab.sh -p scripts/rsl_rl/play_onnx.py \
-  #     --task B2arx-v0 --checkpoint <run_dir>/model_15000.pt --export-deploy --headless
-  #
-  # onnx / deploy_yaml are optional overrides; by default they resolve to:
-  #   run_dir/exported/policy_full.onnx
-  #   run_dir/params/deploy.yaml
-  checkpoint: /home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02/model_15000.pt
-  manifest: /home/lbz/b2arx/b2arx_sim2real_v1/logs/rsl_rl/b2arx_direct/2026-06-07_02-01-02/exported/deploy_manifest.txt
+  name: basic_locomotion
+  run_dir: ../../models/basic_locomotion
+  checkpoint: ../../models/basic_locomotion/basic_locomotion_model.pt
+  manifest: ../../models/basic_locomotion/bundle_manifest.txt
 
 deploy:
   start_state: ArmLoco        # Passive / FixStand / ArmPreAlign / ArmLoco
   auto_arm_loco: true
   ee_sphere: [0.36, 0.56, 0.0]
-  command: [0.0, 0.0, 0.0]    # scripted backend fixed vx/vy/wz
+  command: [0.0, 0.0, 0.0]   # scripted backend fixed vx/vy/wz
+  arm_ema_tau: 0.02
 
 scene:
-  # environment_usd overrides the default local Simple_Warehouse. Local path, http(s),
-  # or omniverse:// URL. Leave unset to use the default warehouse; CLI --scene_asset
-  # minimal forces a bare ground plane. robot_usd defaults to the repo robot.
-  # environment_usd: /home/lbz/Documents/isaac-sim-assets-environments-5.1.0/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/full_warehouse.usd
+  # environment_usd overrides the default local Simple Warehouse. A local path,
+  # http(s), or omniverse:// URL is accepted. Leave unset to use the default.
+  # environment_usd: /absolute/path/to/warehouse.usd
 
 input:
-  backend: gamepad           # scripted / keyboard / gamepad
+  backend: gamepad            # scripted / keyboard / gamepad
   keyboard:
     v_x_sensitivity: 0.8
     v_y_sensitivity: 0.4
