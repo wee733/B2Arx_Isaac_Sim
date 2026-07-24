@@ -19,12 +19,13 @@ setup(
     zip_safe=True,
     maintainer="lbz",
     maintainer_email="lbz@example.com",
-    description="B2ARX ZED/Nvblox/Nav2 simulation bringup",
+    description="B2ARX sim/real adapters for official ZED, Nvblox, and Nav2 stacks",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
             "behavior_footprint_publisher = b2arx_nav2_bringup.behavior_footprint_publisher:main",
             "cmd_vel_watchdog = b2arx_nav2_bringup.cmd_vel_watchdog:main",
+            "odometry_adapter = b2arx_nav2_bringup.odometry_adapter:main",
         ],
     },
 )

@@ -1,10 +1,11 @@
 """Pinned Stereolabs ZED Isaac Sim integration metadata and geometry.
 
 This module deliberately contains no Isaac Sim imports so installation and
-geometry checks can run in a normal Python test process.  The supported path is
-the official Stereolabs stream pipeline:
+geometry checks can run in a normal Python test process.  The supported path
+keeps the official sensor embedded in the core robot USD:
 
-    ZED_X.usdc -> sl.sensor.camera.ZED_Camera -> ZED SDK simulation mode
+    my_robot.usd/Robot/b2_description/R5a/ZED_X
+    -> sl.sensor.camera.ZED_Camera -> ZED SDK simulation mode
     -> zed_wrapper -> Isaac ROS Nvblox
 
 Stereolabs does not currently provide a ZED 2/2i Isaac Sim model.  Isaac Sim
@@ -106,7 +107,6 @@ _ZED_EXTENSION_DISABLE_HOOK = None
 # stream node (which is gated by IsaacReadIMU) never executes.
 ZED_STARTUP_EXTENSION_IDS = (
     "isaacsim.sensors.physics",
-    "isaacsim.robot_setup.assembler",
 )
 ZED_RUNTIME_EXTENSION_IDS = (
     "isaacsim.core.nodes",
@@ -136,12 +136,20 @@ ZED_STREAM_FPS_BY_RESOLUTION = {
 ZED_STREAM_RESOLUTION = "HD1200"
 ZED_STREAM_FPS = 30
 ZED_STREAM_PORT = 30000
-# NETWORK is an official Stereolabs transport mode.  It is the deployment
-# default here so a restarted zed_wrapper cannot inherit a stale same-host IPC
-# stream after an abnormal consumer exit.  BOTH and IPC remain selectable.
-ZED_STREAM_TRANSPORT = "NETWORK"
+# The Stereolabs Isaac Sim helper is the stream server and only selects its
+# transport and port here. ``simulation.sim_address`` is configured on the
+# zed_wrapper receiver: it points back to this Isaac Sim host, so a receiver
+# running on Thor must not set it to Thor's own address.
+# Use the official extension default.  BOTH exposes the network stream for a
+# remote zed_wrapper while retaining the Linux IPC path for a local wrapper;
+# in particular, NETWORK-only can fail to create an RTP session on a local
+# receiver before the SDK has completed discovery (err:-74).
+# BOTH and IPC remain selectable explicitly from the scene CLI.
+ZED_STREAM_TRANSPORT = "BOTH"
 ZED_STREAM_BITRATE_KBPS = 8000
 ZED_STREAM_CHUNK_SIZE_BYTES = 4096
+ZED_STREAM_READY_MESSAGE = "ZED Streamer initialized successfully with ID"
+ZED_STREAM_INIT_ERROR_MESSAGE = "Error during zed streamer initialization"
 
 # Isaac ROS release-4.5 ``get_zed_remappings()`` consumes these outputs from
 # the official zed_wrapper.  Isaac Sim must not publish look-alike topics itself.
@@ -149,28 +157,21 @@ ZED_WRAPPER_TOPICS = {
     "depth": "/zed/zed_node/depth/depth_registered",
     "depth_info": "/zed/zed_node/depth/camera_info",
     "color": "/zed/zed_node/rgb/color/rect/image",
-    "color_info": "/zed/zed_node/rgb/color/rect/camera_info",
+    "color_info": "/zed/zed_node/rgb/camera_info",
     "pose": "/zed/zed_node/pose",
 }
-
-# The user-requested pose is applied to the official USD default prim /Root in
-# the mechanical-arm R5a frame.  /Root/base_link has zero translation and the
-# asset's authored +90 degree frame rotation; the composed cameras face R5a +X.
-ZED_MOUNT_POS_R5A = (0.28, 0.0, -0.03)
-ZED_MOUNT_ROT_WXYZ = (1.0, 0.0, 0.0, 0.0)
 
 # Measured from the official v4.3.0 ZED_X.usdc.  Both cameras look along asset
 # +X; the optical centers are 0.12 m apart.
 ZED_X_BASELINE_M = 0.12
 ZED_X_LEFT_CAMERA_OFFSET = (0.015, +0.06, 0.015)
 ZED_X_RIGHT_CAMERA_OFFSET = (0.015, -0.06, 0.015)
+ZED_CORE_ROOT_REL_PATH = "b2_description/R5a/ZED_X"
 ZED_X_CAMERA_PRIMS = {
     "left": "base_link/ZED_X/CameraLeft",
     "right": "base_link/ZED_X/CameraRight",
 }
 ZED_X_IMU_PRIM = "base_link/ZED_X/Imu_Sensor"
-ZED_X_ASSEMBLER_MOUNT_PRIM = "base_link"
-ZED_ROBOT_MOUNT_FRAME_NAME = "StereolabsZEDMount"
 
 
 def add_zed_startup_kit_args(existing_kit_args: str = "") -> str:
@@ -225,16 +226,6 @@ def validate_zed_stream_settings(
         raise ValueError(f"Unsupported ZED transport: {transport}")
 
 
-def expected_camera_positions_in_r5a() -> dict[str, tuple[float, float, float]]:
-    def add(offset: tuple[float, float, float]) -> tuple[float, float, float]:
-        return tuple(a + b for a, b in zip(ZED_MOUNT_POS_R5A, offset, strict=True))
-
-    return {
-        "left": add(ZED_X_LEFT_CAMERA_OFFSET),
-        "right": add(ZED_X_RIGHT_CAMERA_OFFSET),
-    }
-
-
 def validate_zed_configuration() -> None:
     """Validate the pinned official geometry and helper settings."""
     left = ZED_X_LEFT_CAMERA_OFFSET
@@ -250,105 +241,6 @@ def validate_zed_configuration() -> None:
     )
 
 
-def attach_zed_x_to_robot(
-    *,
-    robot_prim_path: str,
-    r5a_prim_path: str,
-    zed_prim_path: str,
-):
-    """Mount the untouched official ZED X rigid body with Robot Assembler.
-
-    Isaac Sim physics sensors must remain below a valid rigid body.  Therefore
-    the official ZED asset is kept as a sibling of the robot articulation and
-    attached with the same simulated fixed-joint path used by Isaac Sim's
-    Robot Assembler.  This function must run before the first simulation reset
-    or PLAY, when the official IMU is instantiated by the sensor manager.
-    """
-    import omni.kit.commands
-    import omni.usd
-    from isaacsim.robot_setup.assembler import RobotAssembler
-    from pxr import Gf, UsdGeom, UsdPhysics
-
-    stage = omni.usd.get_context().get_stage()
-    robot_prim = stage.GetPrimAtPath(robot_prim_path)
-    r5a_prim = stage.GetPrimAtPath(r5a_prim_path)
-    zed_prim = stage.GetPrimAtPath(zed_prim_path)
-    attach_mount_path = f"{zed_prim_path}/{ZED_X_ASSEMBLER_MOUNT_PRIM}"
-    attach_mount_prim = stage.GetPrimAtPath(attach_mount_path)
-    missing = [
-        path
-        for path, prim in (
-            (robot_prim_path, robot_prim),
-            (r5a_prim_path, r5a_prim),
-            (zed_prim_path, zed_prim),
-            (attach_mount_path, attach_mount_prim),
-        )
-        if not prim.IsValid()
-    ]
-    if missing:
-        raise RuntimeError(f"Cannot assemble official ZED X; missing prims: {missing}")
-    if not zed_prim.HasAPI(UsdPhysics.RigidBodyAPI):
-        raise RuntimeError(
-            f"Official ZED X root {zed_prim_path} lost PhysicsRigidBodyAPI; "
-            "refusing a non-official sensor mount"
-        )
-
-    # Robot Assembler aligns an attachment mount frame to a base mount frame.
-    # Keep the requested pose defined for the official asset /Root while using
-    # its authored /Root/base_link as the physical mounting frame.  With Gf's
-    # row-vector convention this is:
-    #   T_R5a_mount = T_Root_base_link * T_R5a_Root(requested).
-    desired_root_in_r5a = Gf.Transform()
-    desired_root_in_r5a.SetTranslation(Gf.Vec3d(*ZED_MOUNT_POS_R5A))
-    qw, qx, qy, qz = ZED_MOUNT_ROT_WXYZ
-    desired_root_in_r5a.SetRotation(Gf.Rotation(Gf.Quatd(qw, Gf.Vec3d(qx, qy, qz))))
-    attach_mount_in_root = omni.usd.get_local_transform_matrix(attach_mount_prim)
-    base_mount_in_r5a = attach_mount_in_root * desired_root_in_r5a.GetMatrix()
-
-    base_mount_path = f"{r5a_prim_path}/{ZED_ROBOT_MOUNT_FRAME_NAME}"
-    UsdGeom.Xform.Define(stage, base_mount_path)
-    omni.kit.commands.execute(
-        "TransformPrimCommand",
-        path=base_mount_path,
-        new_transform_matrix=base_mount_in_r5a,
-    )
-
-    # This is the alignment equation used by RobotAssembler.begin_assembly()
-    # in Isaac Sim 5.1.  It is applied before physics starts, so the official
-    # IMU never changes rigid-body parent while active.
-    base_mount_world = omni.usd.get_world_transform_matrix(stage.GetPrimAtPath(base_mount_path))
-    zed_parent_world = omni.usd.get_world_transform_matrix(zed_prim.GetParent())
-    zed_in_parent = attach_mount_in_root.GetInverse() * base_mount_world * zed_parent_world.GetInverse()
-    omni.kit.commands.execute(
-        "TransformPrimCommand",
-        path=zed_prim_path,
-        new_transform_matrix=zed_in_parent,
-    )
-
-    attach_mount_world = omni.usd.get_world_transform_matrix(attach_mount_prim)
-    alignment_error = max(
-        abs(float(base_mount_world[row][column] - attach_mount_world[row][column]))
-        for row in range(4)
-        for column in range(4)
-    )
-    if alignment_error > 1.0e-6:
-        raise RuntimeError(
-            "Robot Assembler mount-frame alignment failed for official ZED X: "
-            f"max matrix error={alignment_error:.3e}"
-        )
-
-    assembly = RobotAssembler().assemble_rigid_bodies(
-        base_path=robot_prim_path,
-        attach_path=zed_prim_path,
-        base_mount_frame=base_mount_path,
-        attach_mount_frame=attach_mount_path,
-        mask_all_collisions=True,
-    )
-    if not zed_prim.HasAPI(UsdPhysics.RigidBodyAPI):
-        raise RuntimeError(f"Robot Assembler unexpectedly removed the ZED rigid body at {zed_prim_path}")
-    return assembly
-
-
 def validate_zed_installation() -> None:
     """Fail with the exact reproducible installer command when the extension is absent."""
     try:
@@ -358,6 +250,88 @@ def validate_zed_installation() -> None:
             "Official Stereolabs ZED Isaac Sim extension v4.3.0 is not installed. "
             "Run `python3 scripts/install_zed_isaac_sim.py`. " + str(exc)
         ) from exc
+
+
+def install_zed_stream_status_logger():
+    """Remember Kit's logfile so native ZED status can be mirrored safely.
+
+    A global ``carb.logging`` Python callback is deliberately not used here.
+    Kit invokes logger callbacks synchronously from native worker threads; a
+    callback that needs the Python GIL can therefore deadlock a blocking call
+    such as ``SimulationContext.reset()``.  Kit already writes the required
+    Stereolabs INFO line to ``/log/file``, so the scene polls that file after
+    renderer updates instead.
+    """
+    import carb.settings
+
+    log_file = carb.settings.get_settings().get("/log/file")
+    log_path = Path(log_file).expanduser().resolve() if log_file else None
+    return {
+        "log_path": log_path,
+        "ready": False,
+        "last_error": None,
+        "closed": False,
+    }
+
+
+def report_zed_stream_status(logger_state) -> bool:
+    """Mirror one native streamer readiness/error transition to stdout."""
+    if logger_state is None or logger_state.get("closed"):
+        return False
+    if logger_state["ready"]:
+        return True
+
+    log_path = logger_state.get("log_path")
+    if log_path is None:
+        return False
+    try:
+        with log_path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - 256 * 1024), os.SEEK_SET)
+            log_tail = stream.read().decode("utf-8", errors="replace")
+    except OSError:
+        return False
+
+    plugin_lines = [
+        line
+        for line in log_tail.splitlines()
+        if "[sl.sensor.camera.plugin]" in line
+    ]
+    ready_line = next(
+        (line for line in reversed(plugin_lines) if ZED_STREAM_READY_MESSAGE in line),
+        None,
+    )
+    if ready_line is not None:
+        stream_id = ready_line.rsplit("ID", 1)[-1].strip()
+        logger_state["ready"] = True
+        logger_state["last_error"] = None
+        print(
+            "[READY]: Official Stereolabs ZED Streamer initialized "
+            f"successfully with ID {stream_id}. It is now safe to start zed_wrapper.",
+            flush=True,
+        )
+        return True
+
+    error_line = next(
+        (line for line in reversed(plugin_lines) if ZED_STREAM_INIT_ERROR_MESSAGE in line),
+        None,
+    )
+    if error_line is not None and error_line != logger_state["last_error"]:
+        logger_state["last_error"] = error_line
+        message = error_line.split("[sl.sensor.camera.plugin]", 1)[-1].strip()
+        print(
+            f"[ERROR]: Official Stereolabs streamer initialization failed: {message}",
+            flush=True,
+        )
+    return False
+
+
+def remove_zed_stream_status_logger(logger_state) -> None:
+    """Stop polling state returned by :func:`install_zed_stream_status_logger`."""
+    if logger_state is None:
+        return
+    logger_state["closed"] = True
 
 
 def enable_zed_extension(*, max_app_updates: int = 32) -> str:
@@ -391,7 +365,7 @@ def enable_zed_extension(*, max_app_updates: int = 32) -> str:
             f"--enable {extension_id}" for extension_id in missing_startup_extensions
         )
         raise RuntimeError(
-            "The official ZED IMU/assembler prerequisites must be enabled while Kit starts, "
+            "The official ZED IMU prerequisites must be enabled while Kit starts, "
             "not dynamically after SimulationApp creation. Add these AppLauncher kit args: "
             f"{startup_args}"
         )

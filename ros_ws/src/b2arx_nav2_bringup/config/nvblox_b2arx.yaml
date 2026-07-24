@@ -1,0 +1,16 @@
+# Robot-specific overrides loaded after the unmodified NVIDIA Isaac ROS 4.5
+# nvblox_base.yaml and specializations/nvblox_zed.yaml files.
+/**:
+  ros__parameters:
+    # The simulated ZED publishes its pose in map. Keeping the reconstruction
+    # in map avoids projecting the ZED map->odom vertical component through the
+    # planar nvblox Nav2 costmap layer.
+    global_frame: "map"
+    num_cameras: 1
+
+    # Isaac ROS 4.5's official ZED specialization explicitly disallows LiDAR
+    # input in the same Nvblox instance. Keep reconstruction on ZED depth/color.
+    # The embedded XT32 continues to publish /lidar_points independently for
+    # RViz and algorithms that consume PointCloud2 directly.
+    use_depth: true
+    use_lidar: true

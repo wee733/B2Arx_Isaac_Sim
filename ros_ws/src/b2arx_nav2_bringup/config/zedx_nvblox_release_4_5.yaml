@@ -14,9 +14,10 @@
       publish_raw: true
 
     sensors:
-      # Official Stereolabs local-stream/simulation workaround: query sensor
-      # data at the image timestamp instead of from the independent CURRENT
-      # polling thread. This setting must be paired with GEN_1.
+      # Project-tested simulation-stream setting: query sensor data at the
+      # image timestamp instead of from the independent CURRENT polling
+      # thread. This is not an Isaac ROS requirement; keep it together with
+      # the GEN_1 override below unless the simulated stream is revalidated.
       sensors_image_sync: true
       publish_mag: false
       publish_baro: false
@@ -35,8 +36,8 @@
 
     pos_tracking:
       pos_tracking_enabled: true
-      # Required by the official local-stream/simulation workaround when
-      # sensors_image_sync is enabled.
+      # Project-tested companion to sensors_image_sync for this simulated
+      # stream. It is deliberately an override, not an upstream requirement.
       pos_tracking_mode: "GEN_1"
       imu_fusion: true
       publish_tf: true
@@ -51,7 +52,9 @@
       mapping_enabled: false
 
     debug:
-      # The wrapper 5.4 NITROS image publisher triggers a reproducible CUDA
-      # 700 after sustained simulated streaming on this RTX 5090/CUDA 13 host.
-      # This changes transport only; ZED depth/VIO and Nvblox remain official.
+      # Stable default for the validated RTX 5090/CUDA 13 host. zed_wrapper
+      # 5.4's Managed NITROS publisher reproducibly causes NVIDIA Xid 31/CUDA
+      # 700 followed by a libsl_zed.so segfault. Nvblox still consumes the
+      # official ZED depth/color sensor_msgs/Image topics. The launch argument
+      # disable_zed_nitros can override this for a deliberate future A/B test.
       disable_nitros: true

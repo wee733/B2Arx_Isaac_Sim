@@ -27,6 +27,32 @@ Visualization Manager:
       Show Arrows: true
       Show Axes: true
       Show Names: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: XT32 Point Cloud
+      Enabled: true
+      Alpha: 1
+      Position Transformer: XYZ
+      Color Transformer: AxisColor
+      Axis: Z
+      Autocompute Value Bounds:
+        Value: true
+        Min Value: -1
+        Max Value: 2
+      Use rainbow: true
+      Invert Rainbow: false
+      Style: Flat Squares
+      Size (Pixels): 2
+      Size (m): 0.025
+      Decay Time: 0.15
+      Selectable: true
+      Use Fixed Frame: true
+      Topic:
+        Value: /lidar_points
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Depth: 5
+        Filter size: 10
     - Class: nvblox_rviz_plugin/NvbloxMesh
       Name: Nvblox Mesh
       Enabled: true

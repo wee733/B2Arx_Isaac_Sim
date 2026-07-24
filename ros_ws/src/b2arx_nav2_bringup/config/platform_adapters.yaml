@@ -1,0 +1,22 @@
+# Platform-only interface seams. Sensor and navigation algorithms remain in
+# their upstream packages; this file owns B2ARX frames, mounts, and adapter IO.
+mounts:
+  # T_zed_camera_link_base_link. This single transform is injected into both
+  # static_transform_publisher and odometry_adapter by platform_adapters.launch.py.
+  zed_camera_to_base:
+    parent_frame: zed_camera_link
+    child_frame: base_link
+    translation: [-0.525, 0.0, -0.079]
+    quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+  base_to_hesai_lidar:
+    parent_frame: base_link
+    child_frame: hesai_lidar
+    translation: [0.3493326833, 0.0, 0.1603575616]
+    quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+odometry_adapter:
+  ros__parameters:
+    input_topic: /zed/zed_node/odom
+    output_topic: /b2/odom
+    publish_tf: false

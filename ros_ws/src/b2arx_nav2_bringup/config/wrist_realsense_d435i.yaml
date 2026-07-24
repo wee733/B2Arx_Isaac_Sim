@@ -1,0 +1,10 @@
+# The upstream realsense2_camera/rs_launch.py loads config_file itself, so this
+# must remain a flat parameter dictionary (not a ROS /**/ros__parameters file).
+# The IMU switches intentionally stay in wrist_realsense.launch.py so this file
+# cannot override enable_imu:=false when the official launch merges parameters.
+enable_color: true
+rgb_camera.color_profile: "640x480x30"
+enable_depth: true
+depth_module.depth_profile: "640x480x30"
+align_depth.enable: true
+enable_sync: true
