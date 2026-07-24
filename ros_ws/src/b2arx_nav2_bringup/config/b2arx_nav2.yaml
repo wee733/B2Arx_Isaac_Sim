@@ -313,7 +313,7 @@ velocity_smoother:
     stamp_smoothed_velocity_with_smoothing_time: false
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.25, 0.0, 0.60]
+    max_velocity: [0.8, 0.5, 0.60]
     min_velocity: [0.0, 0.0, -0.60]
     # RPP already generates collision-checked curvature commands. Pass each
     # 20 Hz command through within one smoother tick; the locomotion policy was

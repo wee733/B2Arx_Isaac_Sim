@@ -36,6 +36,14 @@
 
     pos_tracking:
       pos_tracking_enabled: true
+      # The XT32 cloud is stamped at the current /clock tick, while this
+      # wrapper stamps map->odom / odom->zed_camera_link at the ZED grab time,
+      # which trails /clock by up to ~0.3 s under depth load (see the
+      # behavior_server transform_tolerance note in b2arx_nav2.yaml). RViz has
+      # no transform tolerance, so lookups at the lidar stamp fail with
+      # "extrapolation into the future" until the ZED TF catches up. Stamp the
+      # dynamic TF this far ahead so consumers can always interpolate.
+      transform_time_offset: 0.35
       # Project-tested companion to sensors_image_sync for this simulated
       # stream. It is deliberately an override, not an upstream requirement.
       pos_tracking_mode: "GEN_1"
