@@ -563,7 +563,7 @@ def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.55),
+            pos=(5.0, 0.0, 0.55),
             joint_pos={**B2_JOINT_POS, **R5_HOME_POS},
         ),
         actuators={

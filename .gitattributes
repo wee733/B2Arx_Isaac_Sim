@@ -1,2 +1,5 @@
 models/**/*.pt filter=lfs diff=lfs merge=lfs -text
 models/**/*.onnx filter=lfs diff=lfs merge=lfs -text
+assets/wurenyuan/point_cloud.usdz filter=lfs diff=lfs merge=lfs -text
+assets/wurenyuan/rec_mesh4_28.usd filter=lfs diff=lfs merge=lfs -text
+assets/wurenyuan/rec_mesh4_28.ply filter=lfs diff=lfs merge=lfs -text
