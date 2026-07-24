@@ -1,0 +1,59 @@
+# Fast visual/smoke-test profile without ROS or sensor data publication.
+schema_version: 1
+
+robot_usd: ../../assets/my_B2Arx/my_b2arx/my_robot.usd
+
+environment:
+  scene_asset: minimal
+  usd: null
+  workspace: false
+
+zed:
+  enabled: false
+  sdk_stream: false
+  save_frames: false
+  resolution: HD1200
+  fps: 30
+  port: 30000
+  transport: BOTH
+  print_debug: false
+
+wrist_camera:
+  enabled: false
+  camera_prim_path: auto
+  width: 1280
+  height: 720
+  frame_skip_count: 0
+  frame_id: wrist_camera_color_optical_frame
+  color_topic: /wrist_camera/color/image_raw
+  color_info_topic: /wrist_camera/color/camera_info
+  aligned_depth_topic: /wrist_camera/aligned_depth_to_color/image_raw
+  aligned_depth_info_topic: /wrist_camera/aligned_depth_to_color/camera_info
+
+xt32:
+  enabled: false
+  topic: /lidar_points
+  frame_id: hesai_lidar
+  show_debug_view: false
+
+ros:
+  enabled: false
+  domain_id: 23
+  nav2: false
+
+policy:
+  control_mode: hold
+  profile: ../policies/basic_locomotion.yaml
+  arm_gain_profile: identified
+  print_debug: false
+
+viewer:
+  camera: scene
+  headless: false
+
+simulation:
+  num_envs: 1
+  env_spacing: 4.0
+  duration: 0.0
+  device: cuda:0
+  disable_fabric: false

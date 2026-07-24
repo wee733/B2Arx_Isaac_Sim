@@ -15,5 +15,7 @@ ros_ws/log*/
 .remember/
 assets/container_storage/
 assets/paper_cup/
-docs/*
-asserts.zip
+assets.zip
+
+.DS_Store
+Thumbs.db
