@@ -43,7 +43,7 @@ Visualization Manager:
       Style: Flat Squares
       Size (Pixels): 2
       Size (m): 0.025
-      Decay Time: 1.0 #0.15
+      Decay Time: 0.0
       Selectable: true
       Use Fixed Frame: true
       Topic:
@@ -52,7 +52,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Depth: 5
-        Filter size: 10
+        Filter size: 30
     - Class: nvblox_rviz_plugin/NvbloxMesh
       Name: Nvblox Mesh
       Enabled: true
