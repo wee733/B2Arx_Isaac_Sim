@@ -43,7 +43,12 @@
       # no transform tolerance, so lookups at the lidar stamp fail with
       # "extrapolation into the future" until the ZED TF catches up. Stamp the
       # dynamic TF this far ahead so consumers can always interpolate.
-      transform_time_offset: 0.35
+      # Keep this at the TYPICAL lag, not the worst case: consumers see poses
+      # exactly this much older than the cloud they transform, and the walking
+      # body oscillation turns a large constant offset into visible point
+      # cloud smearing. Load spikes beyond this value are absorbed by the
+      # RViz display's tf message filter queue instead.
+      transform_time_offset: 0.10
       # Project-tested companion to sensors_image_sync for this simulated
       # stream. It is deliberately an override, not an upstream requirement.
       pos_tracking_mode: "GEN_1"
