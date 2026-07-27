@@ -16,10 +16,10 @@ from launch.substitutions import IfElseSubstitution, LaunchConfiguration
 from launch_ros.actions import Node, SetParameter, SetRemap
 from launch_ros.descriptions import ParameterFile
 from nav2_common.launch import RewrittenYaml
-from nvblox_ros_python_utils.nvblox_constants import NVBLOX_CONTAINER_NAME
 
 
 UNSUPPORTED_DOCKING_CMD_VEL_TOPIC = "/cmd_vel_docking_unsupported"
+DEFAULT_NAV2_CONTAINER_NAME = "nav2_container"
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -109,7 +109,7 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument("log_level", default_value="info"),
             DeclareLaunchArgument(
-                "container_name", default_value=NVBLOX_CONTAINER_NAME
+                "container_name", default_value=DEFAULT_NAV2_CONTAINER_NAME
             ),
             DeclareLaunchArgument(
                 "nav_params_file",
