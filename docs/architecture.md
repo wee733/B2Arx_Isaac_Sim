@@ -20,8 +20,9 @@ my_robot.usd + Isaac Sim                  ZED X + Hesai XT32 + D435i + 机器人
                  ┌────────────────┼────────────────┐
                  ▼                ▼                ▼
             Isaac ROS Nvblox     Nav2        其它 Isaac ROS 算法
-                 │                │
-                 └──── map/costmap┘
+                 │                 ▲
+                 └── depth slice ──┤ navigation_mode=depth
+                 /lidar_points ────┘ navigation_mode=lidar
                                   │ /cmd_vel
                                   ▼
                          B2 locomotion adapter
@@ -33,6 +34,8 @@ my_robot.usd + Isaac Sim                  ZED X + Hesai XT32 + D435i + 机器人
 
 - ZED 使用官方 `zed_camera.launch.py`，由上游 launch 管理独立的 ZED 容器和 SDK 生命周期。
 - 默认 Nvblox 使用官方 `nvblox.launch.py` 创建唯一共享容器，composed Nav2 加载到该容器。
+- `navigation_mode:=lidar` 不启动 Nvblox；官方 Nav2 以独立进程运行，local/global
+  costmap 的 `ObstacleLayer` 直接订阅 XT32 `/lidar_points`。
 - 当前稳定 profile 设置 `disable_zed_nitros:=true`，ZED 到 Nvblox 走标准
   `sensor_msgs/Image`；Managed NITROS 只保留为显式 A/B 开关。
 
@@ -115,7 +118,8 @@ ZED mount、XT32 mount、frame 和 odometry adapter IO 集中在
 | locomotion policy | `config/policies/*.yaml` |
 | ZED wrapper 覆盖 | `config/zedx_nvblox_release_4_5.yaml` |
 | Nvblox 覆盖 | `config/nvblox_b2arx.yaml` |
-| Nav2 与速度安全节点 | `config/b2arx_nav2.yaml` |
+| ZED depth / Nvblox Nav2 与速度安全节点 | `config/b2arx_nav2.yaml` |
+| XT32 ObstacleLayer Nav2 | `config/b2arx_nav2_xt32.yaml` |
 | B2ARX TF/odom/XT32 安装 frame | `config/platform_adapters.yaml` |
 | D435i 真机 stream | `config/wrist_realsense_d435i.yaml` |
 | easy_handeye 原始结果 | `config/arx_r5a_d543if_eih.calib` |

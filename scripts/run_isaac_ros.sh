@@ -31,9 +31,10 @@ Environment:
   ROS_DOMAIN_ID     DDS domain, default 23.
 
 Examples:
-  ./scripts/run_isaac_ros.sh sim use_rviz:=true sim_port:=30000
+  ./scripts/run_isaac_ros.sh sim navigation_mode:=depth use_rviz:=true
+  ./scripts/run_isaac_ros.sh sim navigation_mode:=lidar use_rviz:=true
   HESAI_CONFIG_FILE=/path/to/config.yaml \
-    ./scripts/run_isaac_ros.sh real start_hesai:=true \
+    ./scripts/run_isaac_ros.sh real navigation_mode:=lidar start_hesai:=true \
       start_wrist_realsense:=true serial_number:=12345678
 EOF
 }

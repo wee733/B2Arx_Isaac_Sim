@@ -13,4 +13,4 @@
     # The embedded XT32 continues to publish /lidar_points independently for
     # RViz and algorithms that consume PointCloud2 directly.
     use_depth: true
-    use_lidar: true
+    use_lidar: false

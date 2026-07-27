@@ -286,14 +286,18 @@ def test_runtime_check_validates_the_xt32_pointcloud_and_tf_contract() -> None:
     assert "ros2 run tf2_ros tf2_echo base_link hesai_lidar" in script
     assert "timeout 15s" in script
 
-    # XT32 is deliberately an independent PointCloud2 source. Its checker
-    # must verify the publisher and payload contract without requiring any
-    # subscriber, especially nvblox_node.
+    # XT32 is independently published. Depth mode only verifies its publisher;
+    # lidar mode additionally requires a Nav2 costmap subscriber.
     lidar_endpoint_check = script.split('lidar_info=""', 1)[1].split(
         'lidar_frame_id="$(',
         1,
     )[0]
-    assert "Subscription\\ count" not in lidar_endpoint_check
+    lidar_publisher_check = lidar_endpoint_check.split(
+        'if [[ "$navigation_mode" == lidar ]]; then',
+        1,
+    )[0]
+    assert "Subscription\\ count" not in lidar_publisher_check
+    assert "no Nav2 costmap subscriber" in lidar_endpoint_check
     assert "Node name: nvblox_node" not in lidar_endpoint_check
 
 

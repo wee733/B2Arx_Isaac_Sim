@@ -40,6 +40,17 @@ Isaac Sim 官方 D455 proxy ─┐
 
 详细分层和 TF 所有权见 [系统架构](docs/architecture.md)。
 
+Nav2 的障碍物输入有两个互斥模式。两种模式复用同一套 planner、controller、footprint、
+`/b2/odom` 和 `cmd_vel` 安全链路，只替换 costmap 的障碍物来源：
+
+| 模式 | 障碍物链路 | 是否启动 Nvblox | 默认定位来源 |
+| --- | --- | --- | --- |
+| `depth` | ZED registered depth → Isaac ROS Nvblox → `NvbloxCostmapLayer` | 是 | ZED VIO |
+| `lidar` | XT32 `/lidar_points` → Nav2 `ObstacleLayer` | 否 | ZED VIO（可替换） |
+
+`lidar` 模式中的 ZED 只负责当前系统的 VIO 和 `map -> base_link` 定位，不把深度或 RGB
+送进 Nav2 costmap。若底盘/SLAM 已经提供 `/b2/odom` 和完整 TF，可以关闭 ZED 定位适配器。
+
 ## 上游复用
 
 | 子系统 | 直接复用的官方入口 |
@@ -131,6 +142,51 @@ cd ~/b2arx_isaac_sim
 ./scripts/run_isaac_ros.sh sim
 ```
 
+Nav2 的障碍物来源已经拆成两个独立模式，planner、controller、footprint、
+watchdog 和 `/b2/odom` 接口保持完全一致：
+
+```bash
+# ZED registered depth -> Isaac ROS Nvblox -> NvbloxCostmapLayer（默认）
+./scripts/run_isaac_ros.sh sim navigation_mode:=depth
+
+# XT32 /lidar_points -> Nav2 ObstacleLayer，不启动 Nvblox
+./scripts/run_isaac_ros.sh sim navigation_mode:=lidar
+```
+
+也可以直接调用对应的算法入口：
+
+```bash
+# 深度模式
+ros2 launch b2arx_nav2_bringup isaac_ros_nav2.launch.py sensor_mode:=sim
+
+# 雷达模式
+ros2 launch b2arx_nav2_bringup b2arx_xt32_nav2.launch.py sensor_mode:=sim
+```
+
+雷达模式当前仍默认启动 ZED，但只用其 VIO 提供 `/b2/odom` 和
+`map -> base_link` 定位链；ZED 深度、RGB 和 Nvblox 都不进入 costmap。
+如果以后由机器人本体或其它定位系统提供 `/b2/odom` 及完整 TF，可同时设置
+`start_zed_wrapper:=false start_odometry_adapter:=false`。
+
+启动后可用下面的命令确认实际使用的障碍层：
+
+```bash
+# 深度模式应包含 nvblox_layer；雷达模式应包含 obstacle_layer
+ros2 param get /local_costmap/local_costmap plugins
+
+# 雷达模式应看到 PointCloud2 publisher 和 Nav2 costmap subscriber
+ros2 topic info /lidar_points --verbose
+
+# 自动检查对应模式的 topic、TF、生命周期和 costmap 参数
+./scripts/check_isaac_ros_runtime.sh --navigation-mode depth
+./scripts/check_isaac_ros_runtime.sh --navigation-mode lidar
+```
+
+XT32 的高度和距离过滤位于
+`ros_ws/src/b2arx_nav2_bringup/config/b2arx_nav2_xt32.yaml`；真机首次运行应根据地面
+点云的实际高度复核 `min_obstacle_height` / `max_obstacle_height`。该模式是实时
+marking/clearing costmap，不会自动生成持久化 SLAM 地图。
+
 旧命令仍保留兼容：
 
 ```bash
@@ -191,6 +247,15 @@ export HESAI_CONFIG_FILE="$HOME/hesai_ws/src/HesaiLidar_ROS_2.0/config/config.ya
   use_rviz:=true
 ```
 
+上面的默认仍是 ZED depth + Nvblox。真机切到 XT32 直接避障只需增加：
+
+```bash
+./scripts/run_isaac_ros.sh real \
+  navigation_mode:=lidar \
+  start_hesai:=true \
+  use_rviz:=true
+```
+
 `wrist_realsense_serial` 默认不硬编码。只有多台 RealSense 时才选择设备，纯数字序列号按官方驱动格式加前导下划线：
 
 ```bash
@@ -234,6 +299,7 @@ ros_ws/src/b2arx_nav2_bringup/launch/
 ├── platform_adapters.launch.py      配置化 B2ARX TF、odom adapter 和 RViz
 ├── manipulation_wrist_d435i.launch.py  现有 ARX manipulation 的腕部 profile
 ├── isaac_ros_nav2.launch.py         共用算法总入口
+├── b2arx_xt32_nav2.launch.py        XT32 ObstacleLayer 独立导航入口
 ├── bringup_sim.launch.py            仿真 profile
 ├── bringup_real.launch.py           真机 profile
 └── b2arx_zed_nvblox_nav2.launch.py  旧入口兼容层
@@ -269,6 +335,7 @@ launch 直接启动各个进程，不依赖 `/nvblox_container`。只有在外�
 | `ros_ws/src/b2arx_nav2_bringup/config/zedx_nvblox_release_4_5.yaml` | ZED 项目覆盖 |
 | `ros_ws/src/b2arx_nav2_bringup/config/nvblox_b2arx.yaml` | Nvblox 项目覆盖 |
 | `ros_ws/src/b2arx_nav2_bringup/config/b2arx_nav2.yaml` | Nav2、costmap、watchdog 和 footprint |
+| `ros_ws/src/b2arx_nav2_bringup/config/b2arx_nav2_xt32.yaml` | XT32 `/lidar_points` Nav2 ObstacleLayer 模式；非 costmap 参数与深度模式保持一致 |
 | `ros_ws/src/b2arx_nav2_bringup/config/platform_adapters.yaml` | ZED/XT32 安装外参、frame 和 odometry adapter |
 | `ros_ws/src/b2arx_nav2_bringup/config/wrist_realsense_d435i.yaml` | 官方 RealSense 真机流参数 |
 | `config/arx_r5a_d543if_eih.calib` | easy_handeye 原始测量结果，保留原格式 |
@@ -315,6 +382,11 @@ frame: hesai_lidar
 ```
 
 Nvblox 当前只融合 ZED depth。Isaac ROS 4.5 官方 ZED specialization 明确拒绝同实例 ZED + LiDAR 融合，因此 XT32 保持独立，供 RViz 和其它点云算法使用。
+
+需要让 XT32 直接承担 Nav2 避障时，选择 `navigation_mode:=lidar`。该模式使用
+官方 `nav2_costmap_2d::ObstacleLayer` 直接消费 `/lidar_points`，不会把 XT32
+强行塞进 ZED Nvblox 实例。它提供实时 marking/clearing costmap，并不等价于
+持久化 SLAM 地图；需要跨视野长期保存的全局地图时，应另接 SLAM/地图服务器。
 
 ### 速度
 
@@ -413,10 +485,17 @@ cd ~/b2arx_isaac_sim
 在线运行验收：
 
 ```bash
-./scripts/check_isaac_ros_runtime.sh --require-wrist-camera
+# 深度/Nvblox 模式（默认）
+./scripts/check_isaac_ros_runtime.sh --navigation-mode depth --require-wrist-camera
+
+# XT32/ObstacleLayer 模式
+./scripts/check_isaac_ros_runtime.sh --navigation-mode lidar
 ```
 
-主要检查 ZED publisher/subscriber、`/b2/odom`、XT32、TF、Nvblox map slice、Nav2 lifecycle/costmap、`/cmd_vel` 唯一发布者，以及腕部 RGB-D 的 publisher、frame 和 depth encoding。不需要检查腕部相机时可省略该选项。
+两种模式都会检查定位、`/b2/odom`、XT32、TF、Nav2 lifecycle/costmap 和
+`/cmd_vel` 唯一发布者；只有 `depth` 模式检查 ZED depth/color 到 Nvblox 的连接及
+map slice，`lidar` 模式则检查 `/lidar_points` 的 Nav2 subscriber。不需要检查腕部
+相机时可省略 `--require-wrist-camera`。
 
 ## 项目目录
 
