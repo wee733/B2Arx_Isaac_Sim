@@ -15,6 +15,7 @@ from .fsm import (
     CtrlFSM,
     FixStandState,
     PassiveState,
+    projected_gravity_from_xyzw,
 )
 from .runtime import DeployPolicyRuntime
 from .command_sources import CommandSource, ScriptedCommandSource
@@ -56,6 +57,7 @@ class IsaacPlantState:
     quat_xyzw: np.ndarray
     base_ang_vel: np.ndarray
     tilt_rad: float
+    projected_gravity: np.ndarray | None = None
 
 
 def controlled_joint_indices(joint_names: list[str] | tuple[str, ...]) -> list[int]:
@@ -77,19 +79,6 @@ def _quat_wxyz_to_xyzw(quat_wxyz) -> np.ndarray:
     return np.array([q[1], q[2], q[3], q[0]], dtype=np.float32)
 
 
-def _projected_gravity_from_xyzw(quat_xyzw: np.ndarray) -> np.ndarray:
-    x, y, z, w = np.asarray(quat_xyzw, dtype=np.float32).reshape(4)
-    rot = np.array(
-        [
-            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
-            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
-            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
-        ],
-        dtype=np.float32,
-    )
-    return rot.T @ np.array([0.0, 0.0, -1.0], dtype=np.float32)
-
-
 class IsaacDeployPlantAdapter:
     """Read/write adapter exposing the same plant contract as the real-mirror FSM."""
 
@@ -99,29 +88,62 @@ class IsaacDeployPlantAdapter:
         self.gripper_ids = gripper_joint_indices(list(robot.joint_names))
         self._joint_ids_tensor = torch.tensor(self.joint_ids, dtype=torch.long, device=robot.device)
         self._gripper_ids_tensor = torch.tensor(self.gripper_ids, dtype=torch.long, device=robot.device)
+        self._cached_state: IsaacPlantState | None = None
 
     @property
     def device(self):
         return self.robot.device
 
+    def invalidate_state(self) -> None:
+        """Drop the cached state; call whenever the simulation has advanced."""
+        self._cached_state = None
+
     def read_state(self) -> IsaacPlantState:
-        q = self.robot.data.joint_pos[0, self._joint_ids_tensor].detach().cpu().numpy().astype(np.float32)
-        dq = self.robot.data.joint_vel[0, self._joint_ids_tensor].detach().cpu().numpy().astype(np.float32)
-        quat_xyzw = _quat_wxyz_to_xyzw(self.robot.data.root_quat_w[0].detach().cpu().numpy())
-        base_ang_vel = self.robot.data.root_ang_vel_b[0].detach().cpu().numpy().astype(np.float32)
-        projected_gravity = _projected_gravity_from_xyzw(quat_xyzw)
+        # Physics does not advance within a control tick, so every FSM state
+        # shares one read (and one device->host transfer) per tick.
+        if self._cached_state is None:
+            self._cached_state = self._read_state()
+        return self._cached_state
+
+    def _read_state(self) -> IsaacPlantState:
+        data = self.robot.data
+        # One device->host sync for all state the FSM and policy need.
+        packed = torch.cat(
+            (
+                data.joint_pos[0, self._joint_ids_tensor],
+                data.joint_vel[0, self._joint_ids_tensor],
+                data.root_quat_w[0],
+                data.root_ang_vel_b[0],
+            )
+        ).detach().to(device="cpu", dtype=torch.float32).numpy()
+        n = len(self.joint_ids)
+        q = packed[:n].copy()
+        dq = packed[n : 2 * n].copy()
+        quat_xyzw = _quat_wxyz_to_xyzw(packed[2 * n : 2 * n + 4])
+        base_ang_vel = packed[2 * n + 4 : 2 * n + 7].copy()
+        projected_gravity = projected_gravity_from_xyzw(quat_xyzw)
         tilt = math.acos(max(-1.0, min(1.0, -float(projected_gravity[2]))))
-        return IsaacPlantState(q=q, dq=dq, quat_xyzw=quat_xyzw, base_ang_vel=base_ang_vel, tilt_rad=tilt)
+        return IsaacPlantState(
+            q=q,
+            dq=dq,
+            quat_xyzw=quat_xyzw,
+            base_ang_vel=base_ang_vel,
+            tilt_rad=tilt,
+            projected_gravity=projected_gravity,
+        )
 
     def apply_targets(self, controlled_q_target: np.ndarray, gripper_q_target: torch.Tensor | None = None) -> None:
         target = torch.as_tensor(controlled_q_target, dtype=torch.float32, device=self.device).reshape(1, -1)
         self.robot.set_joint_position_target(target, joint_ids=self._joint_ids_tensor)
-        if self.gripper_ids and gripper_q_target is not None:
+        if gripper_q_target is not None:
             self.robot.set_joint_position_target(gripper_q_target, joint_ids=self._gripper_ids_tensor)
 
-    def write_control_gains(self, stiffness, damping, joint_ids=None) -> None:
-        if joint_ids is None:
-            joint_ids = self.joint_ids
+    def default_gripper_target(self) -> torch.Tensor | None:
+        if not self.gripper_ids:
+            return None
+        return self.robot.data.default_joint_pos[:, self._gripper_ids_tensor].clone()
+
+    def write_control_gains(self, stiffness, damping, joint_ids) -> None:
         stiffness_t = torch.as_tensor(stiffness, dtype=torch.float32, device=self.device).reshape(1, -1)
         damping_t = torch.as_tensor(damping, dtype=torch.float32, device=self.device).reshape(1, -1)
         joint_ids_t = torch.as_tensor(joint_ids, dtype=torch.long, device=self.device)
@@ -143,7 +165,6 @@ class B2ArxIsaacPolicyController:
         ee_sphere=None,
         auto_arm_loco: bool = False,
         arm_ema_tau: float = 0.02,
-        arm_sync_tau: float = 0.17,
     ):
         self.robot = robot
         self.plant = IsaacDeployPlantAdapter(robot)
@@ -157,15 +178,9 @@ class B2ArxIsaacPolicyController:
             # Pin INIT to the configured sphere so reset restores it, not the default.
             self.command_buffer.INIT = tuple(self.command_buffer.get())
         self.auto_arm_loco = bool(auto_arm_loco)
-        self.arm_sync_tau = float(arm_sync_tau)
-        self._control_acc = 0.0
-        self._state_elapsed = 0.0
         self._last_state_name = start_state
-        self._last_q_target = self.runtime.offset.copy()
-        self._last_kp = np.full_like(self.runtime.stiffness, np.nan, dtype=np.float32)
-        self._last_kd = np.full_like(self.runtime.damping, np.nan, dtype=np.float32)
-        self._last_raw_action = np.zeros(self.runtime.action_dim, dtype=np.float32)
-        self._last_command = ArmLocoCommand()
+        self._gripper_target = self.plant.default_gripper_target()
+        self._reset_tracking()
 
         passive = PassiveState()
         fixstand = FixStandState()
@@ -188,6 +203,9 @@ class B2ArxIsaacPolicyController:
             initial=start_state,
             plant=self.plant,
         )
+        self._loco = loco
+        self._prealign = prealign
+        self._fixstand = fixstand
 
     @property
     def state_name(self) -> str:
@@ -195,10 +213,7 @@ class B2ArxIsaacPolicyController:
 
     @property
     def last_raw_action(self) -> np.ndarray:
-        current = self.fsm.states.get("ArmLoco")
-        if isinstance(current, ArmLocoState):
-            return current.last_raw_action.copy()
-        return self._last_raw_action.copy()
+        return self._loco.last_raw_action.copy()
 
     @property
     def last_q_target(self) -> np.ndarray:
@@ -212,17 +227,23 @@ class B2ArxIsaacPolicyController:
     def control_dt(self) -> float:
         return self.runtime.step_dt
 
-    def reset(self) -> None:
-        self.command_source.reset()
+    def _reset_tracking(self) -> None:
         self._control_acc = 0.0
         self._state_elapsed = 0.0
-        self._last_state_name = self.fsm.current_name
         self._last_q_target = self.runtime.offset.copy()
         self._last_kp = np.full_like(self.runtime.stiffness, np.nan, dtype=np.float32)
         self._last_kd = np.full_like(self.runtime.damping, np.nan, dtype=np.float32)
         self._last_command = ArmLocoCommand()
+
+    def reset(self) -> None:
+        self.command_source.reset()
+        self._last_state_name = self.fsm.current_name
+        self._reset_tracking()
+        self.plant.invalidate_state()
+        # The gripper is not policy-controlled; its default target is constant.
+        self._gripper_target = self.plant.default_gripper_target()
         self._apply_gains_for_state()
-        self.plant.apply_targets(self._last_q_target, self._default_gripper_target())
+        self.plant.apply_targets(self._last_q_target, self._gripper_target)
 
     def close(self) -> None:
         """Release the command source (carb subscriptions)."""
@@ -234,40 +255,31 @@ class B2ArxIsaacPolicyController:
         if self._control_acc + 1.0e-9 >= self.runtime.step_dt:
             self._control_acc -= self.runtime.step_dt
             self._tick_control()
-        self._advance_arm_ema(sim_dt)
-        self.plant.apply_targets(self._last_q_target, self._default_gripper_target())
-
-    def _advance_arm_ema(self, sim_dt: float) -> None:
-        if self.fsm.current_name != "ArmLoco":
-            return
-        loco = self.fsm.states.get("ArmLoco")
-        if not isinstance(loco, ArmLocoState):
-            return
-        self._last_q_target[ArmLocoState.ARM_SLICE] = loco.advance_arm_ema(sim_dt)
+        if self.fsm.current_name == "ArmLoco":
+            self._last_q_target[ArmLocoState.ARM_SLICE] = self._loco.advance_arm_ema(sim_dt)
+        self.plant.apply_targets(self._last_q_target, self._gripper_target)
 
     def _tick_control(self) -> None:
-        state = self.plant.read_state()
+        plant = self.plant
+        plant.invalidate_state()
+        state = plant.read_state()
         command = self._command_for_current_state()
         if self.fsm.current_name == "ArmPreAlign":
-            prealign = self.fsm.states["ArmPreAlign"]
-            assert isinstance(prealign, ArmPreAlignState)
-            prealign.update_ready(arm_q=state.q[12:18], dt=self.runtime.step_dt)
+            self._prealign.update_ready(arm_q=state.q[12:18], dt=self.runtime.step_dt)
         if self.fsm.current_name == "FixStand" and command.arm_prealign_pressed:
-            fixstand = self.fsm.states["FixStand"]
-            prealign = self.fsm.states["ArmPreAlign"]
-            assert isinstance(fixstand, FixStandState)
-            assert isinstance(prealign, ArmPreAlignState)
-            prealign.set_leg_hold_target(fixstand.run(self.plant, command, t=self._state_elapsed)[:12])
+            self._prealign.set_leg_hold_target(self._fixstand.run(plant, command, t=self._state_elapsed)[:12])
 
-        q_target = self.fsm.tick(self.plant, command, tilt_rad=state.tilt_rad, stale=self.command_source.is_stale(), t=self._state_elapsed)
-        if self.fsm.current_name != self._last_state_name:
+        # Transition first, then run the (possibly new) state exactly once, so a
+        # newly entered ArmLoco pushes one observation and infers once.
+        if self.fsm.transition(plant, command, tilt_rad=state.tilt_rad, stale=self.command_source.is_stale()):
             self._state_elapsed = 0.0
-            self._last_state_name = self.fsm.current_name
-            q_target = self.fsm.current.run(self.plant, command, t=0.0)
-        else:
+        q_target = self.fsm.current.run(plant, command, t=self._state_elapsed)
+        if self.fsm.current_name == self._last_state_name:
             self._state_elapsed += self.runtime.step_dt
+        self._last_state_name = self.fsm.current_name
 
         self._last_q_target = np.asarray(q_target, dtype=np.float32).reshape(18)
+        # Cheap when unchanged; re-asserts gains if anything reset the actuators.
         self._apply_gains_for_state()
 
     def _command_for_current_state(self) -> ArmLocoCommand:
@@ -277,10 +289,8 @@ class B2ArxIsaacPolicyController:
                 cmd.fixstand_pressed = True
             elif self.fsm.current_name == "FixStand" and self._state_elapsed >= FixStandState.TS[-1]:
                 cmd.arm_prealign_pressed = True
-            elif self.fsm.current_name == "ArmPreAlign":
-                prealign = self.fsm.states["ArmPreAlign"]
-                if isinstance(prealign, ArmPreAlignState) and prealign.ready:
-                    cmd.arm_loco_pressed = True
+            elif self.fsm.current_name == "ArmPreAlign" and self.fsm.states["ArmPreAlign"].ready:
+                cmd.arm_loco_pressed = True
         self._last_command = ArmLocoCommand(**vars(cmd))
         return cmd
 
@@ -294,11 +304,10 @@ class B2ArxIsaacPolicyController:
         else:
             kp = self.runtime.stiffness.copy()
             kd = self.runtime.damping.copy()
+            # Legs use the stand gains; the arm keeps its policy gains as a soft
+            # position hold, mirroring the real robot's external arm controller.
             kp[:12] = FixStandState.kp
             kd[:12] = FixStandState.kd
-            # Mirror real-mirror non-policy arm external controller by making the Isaac arm a soft position hold.
-            kp[12:18] = self.runtime.stiffness[12:18]
-            kd[12:18] = self.runtime.damping[12:18]
         if not np.allclose(kp, self._last_kp) or not np.allclose(kd, self._last_kd):
             self._write_actuator_gains(kp, kd)
             self._last_kp = kp.copy()
@@ -351,8 +360,3 @@ class B2ArxIsaacPolicyController:
             controlled_sim_joint_ids.append(sim_joint_id)
         return local_ids, controlled_ids, controlled_sim_joint_ids
 
-    def _default_gripper_target(self) -> torch.Tensor | None:
-        if not self.plant.gripper_ids:
-            return None
-        default = self.robot.data.default_joint_pos[:, self.plant._gripper_ids_tensor]
-        return default

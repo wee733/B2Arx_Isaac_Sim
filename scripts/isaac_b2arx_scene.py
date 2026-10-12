@@ -13,6 +13,17 @@ from isaac_ros_env import ensure_ros_bridge_process_environment
 ensure_ros_bridge_process_environment()
 
 from isaaclab.app import AppLauncher
+from simulation_config import (
+    ARM_GAIN_PROFILES,
+    CONTROL_MODES,
+    DEFAULT_POLICY_PROFILE as DEFAULT_NAV2_DEPLOY_CONFIG,
+    DEFAULT_ROBOT_USD,
+    PROJECT_ROOT,
+    SCENE_ASSETS,
+    VIEWER_CAMERAS,
+    WRIST_CAMERA_DEFAULTS,
+    XT32_DEFAULTS,
+)
 from zed_isaac_sim import (
     ZED_CORE_ROOT_REL_PATH,
     ZED_STREAM_FPS,
@@ -31,15 +42,14 @@ from zed_isaac_sim import (
     setup_zed_stream_graph,
     stream_dimensions,
     stream_intrinsics,
+    merge_kit_args,
     validate_zed_configuration,
     validate_zed_installation,
     validate_zed_stream_settings,
 )
 
 
-DEFAULT_ROBOT_USD = Path(__file__).resolve().parents[1] / "assets" / "my_B2Arx" / "my_b2arx" / "my_robot.usd"
-ZED_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "outputs" / "zed_x"
-DEFAULT_NAV2_DEPLOY_CONFIG = Path(__file__).resolve().parents[1] / "config" / "policies" / "basic_locomotion.yaml"
+ZED_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "zed_x"
 
 
 parser = argparse.ArgumentParser(description="Spawn a B2+ARX R5 manipulation scene in Isaac Lab.")
@@ -50,10 +60,7 @@ parser.add_argument("--duration", type=float, default=0.0, help="Seconds to run.
 parser.add_argument("--no_workspace", action="store_true", help="Do not spawn the table and manipulation objects.")
 parser.add_argument(
     "--no_zed", "--no_zed2i", dest="no_zed", action="store_true",
-    help=(
-        "Disable the embedded ZED X data path and extension; the sensor model remains part of the core robot USD "
-        "(--no_zed2i is a legacy alias)."
-    ),
+    help="Disable the embedded ZED X data path and extension; the sensor model remains part of the core robot USD.",
 )
 parser.add_argument(
     "--no_zed_sdk_stream",
@@ -84,7 +91,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--control_mode",
-    choices=("hold", "policy"),
+    choices=sorted(CONTROL_MODES),
     default="hold",
     help="hold keeps the current fixed-pose demo; policy runs the sim2sim2real deployment FSM and ONNX policy.",
 )
@@ -98,7 +105,7 @@ parser.add_argument(
 parser.add_argument("--print_policy_debug", action="store_true", help="Print policy FSM/action/target diagnostics.")
 parser.add_argument(
     "--scene_asset",
-    choices=("default", "minimal", "grid", "rough_plane", "warehouse", "warehouse_local", "hospital"),
+    choices=sorted(SCENE_ASSETS),
     default="default",
     help="Background USD. 'default' = local Simple_Warehouse; 'minimal' = bare ground plane; "
     "others are official Nucleus assets. deploy_config scene.environment_usd overrides 'default'.",
@@ -111,13 +118,13 @@ parser.add_argument(
 )
 parser.add_argument(
     "--arm_gain_profile",
-    choices=("identified", "train"),
+    choices=sorted(ARM_GAIN_PROFILES),
     default="identified",
     help="Arm PD gains. 'identified' uses the 2026-06-05 pure-PD fit; 'train' uses the nominal Isaac training contract.",
 )
 parser.add_argument(
     "--viewer_camera",
-    choices=("scene", "zed", "zed_left", "zed_right", "wrist"),
+    choices=sorted(VIEWER_CAMERAS),
     default="scene",
     help="Select the viewport camera; zed is an alias for zed_left and wrist uses the embedded RealSense color camera.",
 )
@@ -148,13 +155,13 @@ parser.add_argument(
 parser.add_argument(
     "--xt32_pointcloud_topic",
     type=str,
-    default="/lidar_points",
+    default=XT32_DEFAULTS["topic"],
     help="ROS2 PointCloud2 topic for the embedded XT32; defaults to the real Hesai driver contract.",
 )
 parser.add_argument(
     "--xt32_frame_id",
     type=str,
-    default="hesai_lidar",
+    default=XT32_DEFAULTS["frame_id"],
     help="ROS frame_id stamped on the embedded XT32 point cloud.",
 )
 parser.add_argument(
@@ -173,40 +180,16 @@ parser.add_argument(
 parser.add_argument(
     "--wrist_camera_prim_path",
     type=str,
-    default="auto",
+    default=WRIST_CAMERA_DEFAULTS["prim_path"],
     help=(
         "Color-camera prim inside the instantiated robot. Use 'auto', an "
         "absolute stage path, or a path relative to the robot prim."
     ),
 )
-parser.add_argument("--wrist_camera_width", type=int, default=1280)
-parser.add_argument("--wrist_camera_height", type=int, default=720)
-parser.add_argument("--wrist_camera_frame_skip_count", type=int, default=0)
-parser.add_argument(
-    "--wrist_camera_frame_id",
-    type=str,
-    default="wrist_camera_color_optical_frame",
-)
-parser.add_argument(
-    "--wrist_camera_color_topic",
-    type=str,
-    default="/wrist_camera/color/image_raw",
-)
-parser.add_argument(
-    "--wrist_camera_color_info_topic",
-    type=str,
-    default="/wrist_camera/color/camera_info",
-)
-parser.add_argument(
-    "--wrist_camera_aligned_depth_topic",
-    type=str,
-    default="/wrist_camera/aligned_depth_to_color/image_raw",
-)
-parser.add_argument(
-    "--wrist_camera_aligned_depth_info_topic",
-    type=str,
-    default="/wrist_camera/aligned_depth_to_color/camera_info",
-)
+for _key in ("width", "height", "frame_skip_count"):
+    parser.add_argument(f"--wrist_camera_{_key}", type=int, default=WRIST_CAMERA_DEFAULTS[_key])
+for _key in ("frame_id", "color_topic", "color_info_topic", "aligned_depth_topic", "aligned_depth_info_topic"):
+    parser.add_argument(f"--wrist_camera_{_key}", type=str, default=WRIST_CAMERA_DEFAULTS[_key])
 parser.add_argument(
     "--nav2",
     action="store_true",
@@ -261,17 +244,14 @@ if args_cli.ros2 and not args_cli.no_xt32_pointcloud:
     # Isaac Sim 5.1 no longer enables Motion BVH by default. RTX lidar on a
     # moving robot needs these settings before SimulationApp starts or the
     # accumulated full scan omits motion effects.
-    motion_bvh_args = (
-        "--/renderer/raytracingMotion/enabled=true",
-        "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
-        "--/renderer/raytracingMotion/enabledForHydraEngines='0'",
+    args_cli.kit_args = merge_kit_args(
+        args_cli.kit_args,
+        settings=(
+            "--/renderer/raytracingMotion/enabled=true",
+            "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
+            "--/renderer/raytracingMotion/enabledForHydraEngines='0'",
+        ),
     )
-    kit_tokens = args_cli.kit_args.split()
-    for motion_arg in motion_bvh_args:
-        setting_name = motion_arg.split("=", 1)[0]
-        if not any(token == setting_name or token.startswith(f"{setting_name}=") for token in kit_tokens):
-            kit_tokens.append(motion_arg)
-    args_cli.kit_args = " ".join(kit_tokens)
 if (
     not args_cli.no_zed
     or (args_cli.ros2 and not args_cli.no_xt32_pointcloud)
@@ -319,7 +299,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from pxr import Usd, UsdPhysics
 from ee_sphere import target_world_to_sphere
 from policy_deploy.command_sources import make_command_source
-from policy_deploy.deploy_config import load_deploy_config, verify_policy_bundle
+from policy_deploy.deploy_config import is_remote_usd, load_deploy_config, verify_policy_bundle
 from policy_deploy.isaac_controller import B2ArxIsaacPolicyController
 B2_JOINT_POS = {
     "b2_description_FL_hip_joint": 0.15,
@@ -413,7 +393,7 @@ OFFICIAL_SCENE_ASSETS = {
 
 def _resolve_usd_path(usd_path: str) -> str:
     """Resolve local USD paths while leaving Isaac/Nucleus URLs untouched."""
-    if usd_path.startswith(("http://", "https://", "omniverse://")):
+    if is_remote_usd(usd_path):
         return usd_path
     return str(Path(usd_path).expanduser().resolve())
 
@@ -460,85 +440,44 @@ def selected_environment_usd() -> str | None:
 SELECTED_ENVIRONMENT_USD = selected_environment_usd()
 
 
+# Arm PD gains (kp, kd) per joint.  "identified" is the pure-PD actuator fit
+# documented in README.md (its delay_steps are not representable by
+# IdealPDActuatorCfg); "train" is the nominal Isaac training contract.
+ARM_IDENTIFIED_GAINS = {
+    "R5a_joint1": (16.002533696088847, 0.9653550775562955),
+    "R5a_joint2": (26.66343352125888, 1.898936300858176),
+    "R5a_joint3": (31.72318363299385, 2.4018660298707024),
+    "R5a_joint4": (5.3742454192848506, 0.18449434631628026),
+    "R5a_joint5": (3.088030381518184, 0.14579060361110824),
+    "R5a_joint6": (4.858456866357783, 0.04160561372766666),
+}
+ARM_TRAIN_SHOULDER_GAINS = (128.0, 3.0)  # R5a_joint2
+ARM_TRAIN_OTHER_GAINS = (64.0, 1.5)
+
+
+def _pd_actuator(joint_names, effort_limit: float, stiffness: float, damping: float) -> IdealPDActuatorCfg:
+    return IdealPDActuatorCfg(
+        joint_names_expr=list(joint_names),
+        effort_limit=effort_limit,
+        effort_limit_sim=effort_limit,
+        velocity_limit=100.0,
+        velocity_limit_sim=100.0,
+        stiffness=stiffness,
+        damping=damping,
+    )
+
+
 def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
     if args_cli.arm_gain_profile == "identified":
-        # Source: the actuator-identification fit documented in README.md.
-        # Pure PD fit. delay_steps are recorded in that file but IdealPDActuatorCfg only supports kp/kd/limits.
         arm_actuators = {
-            "arm_joint1": IdealPDActuatorCfg(
-                joint_names_expr=["R5a_joint1"],
-                effort_limit=64.0,
-                effort_limit_sim=64.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=16.002533696088847,
-                damping=0.9653550775562955,
-            ),
-            "arm_joint2": IdealPDActuatorCfg(
-                joint_names_expr=["R5a_joint2"],
-                effort_limit=64.0,
-                effort_limit_sim=64.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=26.66343352125888,
-                damping=1.898936300858176,
-            ),
-            "arm_joint3": IdealPDActuatorCfg(
-                joint_names_expr=["R5a_joint3"],
-                effort_limit=64.0,
-                effort_limit_sim=64.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=31.72318363299385,
-                damping=2.4018660298707024,
-            ),
-            "arm_joint4": IdealPDActuatorCfg(
-                joint_names_expr=["R5a_joint4"],
-                effort_limit=64.0,
-                effort_limit_sim=64.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=5.3742454192848506,
-                damping=0.18449434631628026,
-            ),
-            "arm_joint5": IdealPDActuatorCfg(
-                joint_names_expr=["R5a_joint5"],
-                effort_limit=64.0,
-                effort_limit_sim=64.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=3.088030381518184,
-                damping=0.14579060361110824,
-            ),
-            "arm_joint6": IdealPDActuatorCfg(
-                joint_names_expr=["R5a_joint6"],
-                effort_limit=64.0,
-                effort_limit_sim=64.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=4.858456866357783,
-                damping=0.04160561372766666,
-            ),
+            f"arm_joint{index}": _pd_actuator([name], 64.0, kp, kd)
+            for index, (name, (kp, kd)) in enumerate(ARM_IDENTIFIED_GAINS.items(), start=1)
         }
     else:
         arm_actuators = {
-            "arm_shoulder": IdealPDActuatorCfg(
-                joint_names_expr=["R5a_joint2"],
-                effort_limit=64.0,
-                effort_limit_sim=64.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=128.0,
-                damping=3.0,
-            ),
-            "arm_other": IdealPDActuatorCfg(
-                joint_names_expr=["R5a_joint1", "R5a_joint3", "R5a_joint4", "R5a_joint5", "R5a_joint6"],
-                effort_limit=64.0,
-                effort_limit_sim=64.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=64.0,
-                damping=1.5,
+            "arm_shoulder": _pd_actuator(["R5a_joint2"], 64.0, *ARM_TRAIN_SHOULDER_GAINS),
+            "arm_other": _pd_actuator(
+                [name for name in ARM_JOINTS if name != "R5a_joint2"], 64.0, *ARM_TRAIN_OTHER_GAINS
             ),
         }
 
@@ -567,43 +506,11 @@ def make_robot_cfg(robot_usd: str) -> ArticulationCfg:
             joint_pos={**B2_JOINT_POS, **R5_HOME_POS},
         ),
         actuators={
-            "leg_hip_joints": IdealPDActuatorCfg(
-                joint_names_expr=LEG_HIP_JOINTS,
-                effort_limit=200.0,
-                effort_limit_sim=200.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=300.0,
-                damping=7.5,
-            ),
-            "leg_thigh_joints": IdealPDActuatorCfg(
-                joint_names_expr=LEG_THIGH_JOINTS,
-                effort_limit=200.0,
-                effort_limit_sim=200.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=300.0,
-                damping=7.5,
-            ),
-            "leg_calf_joints": IdealPDActuatorCfg(
-                joint_names_expr=LEG_CALF_JOINTS,
-                effort_limit=320.0,
-                effort_limit_sim=320.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=500.0,
-                damping=12.5,
-            ),
+            "leg_hip_joints": _pd_actuator(LEG_HIP_JOINTS, 200.0, 300.0, 7.5),
+            "leg_thigh_joints": _pd_actuator(LEG_THIGH_JOINTS, 200.0, 300.0, 7.5),
+            "leg_calf_joints": _pd_actuator(LEG_CALF_JOINTS, 320.0, 500.0, 12.5),
             **arm_actuators,
-            "gripper": IdealPDActuatorCfg(
-                joint_names_expr=["R5a_joint[7-8]"],
-                effort_limit=64.0,
-                effort_limit_sim=64.0,
-                velocity_limit=100.0,
-                velocity_limit_sim=100.0,
-                stiffness=64.0,
-                damping=1.5,
-            ),
+            "gripper": _pd_actuator(["R5a_joint[7-8]"], 64.0, 64.0, 1.5),
         },
     )
 
@@ -1054,29 +961,35 @@ def print_zed_imu_reading(step: int) -> None:
     )
 
 
+_DIAG_JOINT_IDS: dict[str, list[int]] = {}
+
+
 def print_arm_diagnostics(robot, target_joint_pos: torch.Tensor, elapsed: float) -> None:
-    leg_joint_names = [*LEG_HIP_JOINTS, *LEG_THIGH_JOINTS, *LEG_CALF_JOINTS]
-    leg_joint_ids = [robot.joint_names.index(name) for name in leg_joint_names]
-    arm_joint_ids = [robot.joint_names.index(name) for name in ARM_JOINTS]
-    leg_pos = robot.data.joint_pos[:, leg_joint_ids]
-    leg_vel = robot.data.joint_vel[:, leg_joint_ids]
-    leg_target = target_joint_pos[:, leg_joint_ids]
-    leg_error = leg_pos - leg_target
-    leg_torque = robot.data.applied_torque[:, leg_joint_ids]
-    arm_pos = robot.data.joint_pos[:, arm_joint_ids]
-    arm_vel = robot.data.joint_vel[:, arm_joint_ids]
-    arm_target = target_joint_pos[:, arm_joint_ids]
-    arm_error = arm_pos - arm_target
-    arm_torque = robot.data.applied_torque[:, arm_joint_ids]
+    if not _DIAG_JOINT_IDS:
+        leg_joint_names = [*LEG_HIP_JOINTS, *LEG_THIGH_JOINTS, *LEG_CALF_JOINTS]
+        _DIAG_JOINT_IDS["leg"] = [robot.joint_names.index(name) for name in leg_joint_names]
+        _DIAG_JOINT_IDS["arm"] = [robot.joint_names.index(name) for name in ARM_JOINTS]
+    data = robot.data
+    maxima = []
+    for ids in (_DIAG_JOINT_IDS["leg"], _DIAG_JOINT_IDS["arm"]):
+        maxima.extend(
+            (
+                (data.joint_pos[:, ids] - target_joint_pos[:, ids]).abs().max(),
+                data.joint_vel[:, ids].abs().max(),
+                data.applied_torque[:, ids].abs().max(),
+            )
+        )
+    # One device->host transfer; DIAG_EVERY=1 runs this every physics step.
+    leg_err, leg_vel, leg_tau, arm_err, arm_vel, arm_tau = torch.stack(maxima).cpu().tolist()
     print(
         "[DIAG]: "
         f"t={elapsed:.2f}s "
-        f"leg_abs_err_max={leg_error.abs().max().item():.4f}rad "
-        f"leg_abs_vel_max={leg_vel.abs().max().item():.4f}rad/s "
-        f"leg_abs_tau_max={leg_torque.abs().max().item():.2f}Nm "
-        f"arm_abs_err_max={arm_error.abs().max().item():.4f}rad "
-        f"arm_abs_vel_max={arm_vel.abs().max().item():.4f}rad/s "
-        f"arm_abs_tau_max={arm_torque.abs().max().item():.2f}Nm",
+        f"leg_abs_err_max={leg_err:.4f}rad "
+        f"leg_abs_vel_max={leg_vel:.4f}rad/s "
+        f"leg_abs_tau_max={leg_tau:.2f}Nm "
+        f"arm_abs_err_max={arm_err:.4f}rad "
+        f"arm_abs_vel_max={arm_vel:.4f}rad/s "
+        f"arm_abs_tau_max={arm_tau:.2f}Nm",
         flush=True,
     )
 
@@ -1088,12 +1001,7 @@ def print_policy_diagnostics(controller: B2ArxIsaacPolicyController, elapsed: fl
     target = controller.last_q_target
     cmd = controller.last_command
     root_pos = controller.robot.data.root_pos_w[0].detach().cpu().numpy()
-    root_quat_wxyz = controller.robot.data.root_quat_w[0].detach().cpu().numpy()
-    qw, qx, qy, qz = (float(value) for value in root_quat_wxyz)
-    root_yaw = math.atan2(
-        2.0 * (qw * qz + qx * qy),
-        1.0 - 2.0 * (qy * qy + qz * qz),
-    )
+    root_yaw = _root_yaw_from_quat_wxyz(controller.robot.data.root_quat_w[0].detach().cpu())
     print(
         "[POLICY]: "
         f"t={elapsed:.2f}s state={controller.state_name} "
@@ -1116,7 +1024,7 @@ def _policy_target_tensor(robot, controller: B2ArxIsaacPolicyController) -> torc
 
 
 def make_policy_controller(robot) -> B2ArxIsaacPolicyController:
-    cfg = DEPLOY_CFG if DEPLOY_CFG is not None else load_deploy_config(args_cli.deploy_config)
+    cfg = DEPLOY_CFG  # loaded at startup whenever --control_mode policy
     onnx = cfg.policy.resolved_onnx()
     deploy_yaml = cfg.policy.resolved_deploy_yaml()
     if not Path(onnx).exists():
@@ -1219,13 +1127,13 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene) -> None:
         while simulation_app.is_running():
             if args_cli.duration > 0.0 and elapsed >= args_cli.duration:
                 break
-            if _dense_n and count % _dense_n == 0:
-                target_for_diag = hold_joint_pos if policy_controller is None else _policy_target_tensor(robot, policy_controller)
-                print_arm_diagnostics(robot, target_for_diag, elapsed)
-            if count % 200 == 0:
+            periodic_diag = count % 200 == 0
+            if periodic_diag:
                 print(f"[INFO]: t={elapsed:.2f}s", flush=True)
+            if periodic_diag or (_dense_n and count % _dense_n == 0):
                 target_for_diag = hold_joint_pos if policy_controller is None else _policy_target_tensor(robot, policy_controller)
                 print_arm_diagnostics(robot, target_for_diag, elapsed)
+            if periodic_diag:
                 if policy_controller is not None:
                     print_policy_diagnostics(policy_controller, elapsed)
                 print_ee_target_debug(scene, elapsed)
@@ -1246,7 +1154,8 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene) -> None:
             # a separate render flush keeps /clock, ZED and RTX LiDAR on the
             # same simulation time.  Headless still renders when a renderer-side
             # ZED probe needs a fresh frame.
-            render_this_step = (count % RENDER_DECIMATION == 0) or _needs_camera_frame(count)
+            save_camera_frame = _needs_camera_frame(count)
+            render_this_step = (count % RENDER_DECIMATION == 0) or save_camera_frame
             sim.step(render=False)
             if render_this_step:
                 sim.render()
@@ -1254,8 +1163,7 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene) -> None:
             scene.update(sim_dt)
             if count == 100:
                 print_zed_imu_reading(count)
-            save_due = args_cli.save_zed_frames and (count == 30 or (count > 0 and count % 300 == 0))
-            if save_due:
+            if save_camera_frame:
                 save_zed_frame(scene, count)
 
             count += 1
@@ -1343,8 +1251,6 @@ def main() -> None:
             )
 
         if args_cli.wrist_camera:
-            if wrist_camera_prim_path is None:
-                raise RuntimeError("Wrist camera prim validation returned no path")
             ros2_bridge.setup_ros2_wrist_camera(
                 domain_id=args_cli.ros2_domain_id,
                 camera_prim_path=wrist_camera_prim_path,

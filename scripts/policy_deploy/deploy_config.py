@@ -11,12 +11,19 @@ import yaml
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
+REMOTE_USD_PREFIXES = ("http://", "https://", "omniverse://")
+
+
+def is_remote_usd(text: str) -> bool:
+    return str(text).startswith(REMOTE_USD_PREFIXES)
+
+
 def _resolve_path(value, *, base_dir: Path | None = None):
     """Resolve a local path relative to its YAML file when one is supplied."""
     if value is None or value == "":
         return None
     text = str(value)
-    if text.startswith(("http://", "https://", "omniverse://")):
+    if is_remote_usd(text):
         return text
     path = Path(text).expanduser()
     if base_dir is not None and not path.is_absolute():
@@ -303,39 +310,25 @@ class InputSettings:
 class DeployConfig:
     """Top-level deployment configuration: policy + scene + deploy settings.
 
-    Loaded from a hand-written deploy_config.yaml. The active policy is a single
-    PolicyConfig (method A). The ``policies`` list is reserved for future multi-policy
-    hot-switching (method C): when populated, ``policy`` is the initially active one.
+    Loaded from a hand-written deploy_config.yaml with a single active policy.
     """
 
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     scene: SceneConfig = field(default_factory=SceneConfig)
     deploy: DeploySettings = field(default_factory=DeploySettings)
     input: InputSettings = field(default_factory=InputSettings)
-    # Reserved for method C. Empty today; each entry is a selectable PolicyConfig.
-    policies: list[PolicyConfig] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict, *, base_dir: Path | None = None) -> "DeployConfig":
         data = data or {}
-        policies_raw = data.get("policies") or []
-        policies = [
-            PolicyConfig.from_dict(p, name=p.get("name", f"policy_{i}"), base_dir=base_dir)
-            for i, p in enumerate(policies_raw)
-        ]
-        # Active single policy: explicit `policy:` block, else first of `policies:`.
-        if "policy" in data and data["policy"]:
-            policy = PolicyConfig.from_dict(data["policy"], base_dir=base_dir)
-        elif policies:
-            policy = policies[0]
-        else:
-            policy = PolicyConfig()
+        if "policies" in data:
+            raise ValueError("deploy_config 'policies:' is not supported; configure one 'policy:' block")
+        policy_data = data.get("policy")
         return cls(
-            policy=policy,
+            policy=PolicyConfig.from_dict(policy_data, base_dir=base_dir) if policy_data else PolicyConfig(),
             scene=SceneConfig.from_dict(data.get("scene") or {}, base_dir=base_dir),
             deploy=DeploySettings.from_dict(data.get("deploy") or {}),
             input=InputSettings.from_dict(data.get("input") or {}),
-            policies=policies,
         )
 
 

@@ -75,7 +75,7 @@ else
   exit 2
 fi
 
-config_output="$("${config_python}" "${config_helper}" --config "${config_path}" --emit lines)"
+config_output="$("${config_python}" "${config_helper}" --config "${config_path}")"
 config_arguments=()
 if [[ -n "${config_output}" ]]; then
   mapfile -t config_arguments <<<"${config_output}"

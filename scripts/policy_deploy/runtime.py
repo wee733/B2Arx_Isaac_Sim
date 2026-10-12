@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from collections import deque
 from pathlib import Path
 from typing import Iterable
 
@@ -122,7 +121,7 @@ class DeployPolicyRuntime:
             raise ValueError(
                 f"deploy.yaml observations.obs_history has unsupported terms: {sorted(unexpected_obs_terms)}"
             )
-        self.obs_terms = [(name, obs_h[name]["scale"]) for name in OBS_TERM_ORDER]
+        self.obs_terms = [(name, np.asarray(obs_h[name]["scale"], dtype=np.float32)) for name in OBS_TERM_ORDER]
         self.single_obs_dim = int(sum(len(scale) for _, scale in self.obs_terms))
         self.frame_stack = int(obs_h[self.obs_terms[0][0]].get("history_length", 30))
 
@@ -142,7 +141,9 @@ class DeployPolicyRuntime:
         self.out_name = None
         if onnx_path is not None:
             self.load_onnx(onnx_path)
-        self._hist: deque[np.ndarray] = deque(maxlen=self.frame_stack)
+        # Oldest frame first, matching the gym-style flat history stack.
+        self._hist = np.zeros((self.frame_stack, self.single_obs_dim), dtype=np.float32)
+        self._hist_len = 0
 
     @property
     def action_dim(self) -> int:
@@ -214,13 +215,14 @@ class DeployPolicyRuntime:
         self.out_name = outputs[0].name
 
     def reset_history(self, current_obs) -> None:
-        obs = self._validate_obs(current_obs)
-        self._hist.clear()
-        for _ in range(self.frame_stack):
-            self._hist.append(obs.copy())
+        self._hist[:] = self._validate_obs(current_obs)
+        self._hist_len = self.frame_stack
 
     def push(self, obs) -> None:
-        self._hist.append(self._validate_obs(obs))
+        obs = self._validate_obs(obs)
+        self._hist[:-1] = self._hist[1:]
+        self._hist[-1] = obs
+        self._hist_len = min(self._hist_len + 1, self.frame_stack)
 
     def _validate_obs(self, obs) -> np.ndarray:
         arr = np.asarray(obs, dtype=np.float32).reshape(-1)
@@ -229,14 +231,16 @@ class DeployPolicyRuntime:
         return arr
 
     def obs_history_flat(self) -> np.ndarray:
-        if len(self._hist) != self.frame_stack:
+        if self._hist_len != self.frame_stack:
             raise RuntimeError("policy history is not initialized; call reset_history() first")
-        return np.concatenate(list(self._hist)).astype(np.float32)
+        return self._hist.reshape(-1).copy()
 
     def infer(self) -> np.ndarray:
         if self.sess is None or self.in_name is None or self.out_name is None:
             raise RuntimeError("infer requires an ONNX session; pass onnx_path when constructing DeployPolicyRuntime")
-        x = self.obs_history_flat().reshape(1, -1)
+        if self._hist_len != self.frame_stack:
+            raise RuntimeError("policy history is not initialized; call reset_history() first")
+        x = self._hist.reshape(1, -1)
         out = self.sess.run([self.out_name], {self.in_name: x})[0]
         return out.reshape(-1).astype(np.float32)
 

@@ -17,6 +17,7 @@ import hashlib
 import math
 import os
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 
@@ -64,14 +65,21 @@ def zed_x_usd_path() -> Path:
 
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    with Path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
+# Extension directories already verified in this process; the scene validates
+# before Kit starts and enable_zed_extension() validates again afterwards.
+_VALIDATED_EXTENSION_DIRS: set[Path] = set()
+
+
 def validate_zed_extension_dir(extension_dir: Path) -> None:
     """Verify critical files against the checksum-pinned official release."""
+    if extension_dir.resolve() in _VALIDATED_EXTENSION_DIRS:
+        return
     missing = [
         extension_dir / relative
         for relative in ZED_EXTENSION_FILE_SHA256
@@ -93,6 +101,7 @@ def validate_zed_extension_dir(extension_dir: Path) -> None:
             "Reinstall with `python3 scripts/install_zed_isaac_sim.py --force`:\n  "
             + "\n  ".join(mismatches)
         )
+    _VALIDATED_EXTENSION_DIRS.add(extension_dir.resolve())
 
 
 ZED_EXTENSION_ID = "sl.sensor.camera"
@@ -174,8 +183,16 @@ ZED_X_CAMERA_PRIMS = {
 ZED_X_IMU_PRIM = "base_link/ZED_X/Imu_Sensor"
 
 
-def add_zed_startup_kit_args(existing_kit_args: str = "") -> str:
-    """Add extensions that must be loaded while Kit itself is starting."""
+def merge_kit_args(
+    existing_kit_args: str = "",
+    *,
+    extensions: Iterable[str] = (),
+    settings: Iterable[str] = (),
+) -> str:
+    """Append Kit ``--enable`` extensions and ``--/setting=value`` args unless already present.
+
+    Settings already given by the caller win, so user CLI overrides are kept.
+    """
     tokens = existing_kit_args.split()
     enabled = {
         tokens[index + 1]
@@ -183,10 +200,20 @@ def add_zed_startup_kit_args(existing_kit_args: str = "") -> str:
         if token == "--enable"
     }
     enabled.update(token.removeprefix("--enable=") for token in tokens if token.startswith("--enable="))
-    for extension_id in ZED_STARTUP_EXTENSION_IDS:
+    for extension_id in extensions:
         if extension_id not in enabled:
             tokens.extend(("--enable", extension_id))
+            enabled.add(extension_id)
+    for setting in settings:
+        name = setting.split("=", 1)[0]
+        if not any(token == name or token.startswith(f"{name}=") for token in tokens):
+            tokens.append(setting)
     return " ".join(tokens)
+
+
+def add_zed_startup_kit_args(existing_kit_args: str = "") -> str:
+    """Add extensions that must be loaded while Kit itself is starting."""
+    return merge_kit_args(existing_kit_args, extensions=ZED_STARTUP_EXTENSION_IDS)
 
 
 def stream_dimensions(resolution: str = ZED_STREAM_RESOLUTION) -> tuple[int, int]:
@@ -227,18 +254,10 @@ def validate_zed_stream_settings(
 
 
 def validate_zed_configuration() -> None:
-    """Validate the pinned official geometry and helper settings."""
-    left = ZED_X_LEFT_CAMERA_OFFSET
-    right = ZED_X_RIGHT_CAMERA_OFFSET
-    baseline = math.sqrt(sum((a - b) ** 2 for a, b in zip(left, right, strict=True)))
+    """Fail before Kit starts if the pinned ZED X geometry constants were edited inconsistently."""
+    baseline = math.dist(ZED_X_LEFT_CAMERA_OFFSET, ZED_X_RIGHT_CAMERA_OFFSET)
     if not math.isclose(baseline, ZED_X_BASELINE_M, abs_tol=1.0e-12):
         raise ValueError(f"Official ZED X baseline mismatch: {baseline} != {ZED_X_BASELINE_M}")
-    validate_zed_stream_settings(
-        ZED_STREAM_RESOLUTION,
-        ZED_STREAM_FPS,
-        ZED_STREAM_PORT,
-        ZED_STREAM_TRANSPORT,
-    )
 
 
 def validate_zed_installation() -> None:
@@ -271,6 +290,10 @@ def install_zed_stream_status_logger():
         "ready": False,
         "last_error": None,
         "closed": False,
+        # Bytes already scanned; polling only reads what Kit appended since.
+        "offset": None,
+        "file_id": None,
+        "partial": b"",
     }
 
 
@@ -286,18 +309,28 @@ def report_zed_stream_status(logger_state) -> bool:
         return False
     try:
         with log_path.open("rb") as stream:
-            stream.seek(0, os.SEEK_END)
-            size = stream.tell()
-            stream.seek(max(0, size - 256 * 1024), os.SEEK_SET)
-            log_tail = stream.read().decode("utf-8", errors="replace")
+            file_id = os.fstat(stream.fileno()).st_ino
+            size = stream.seek(0, os.SEEK_END)
+            offset = logger_state.get("offset")
+            if offset is None or offset > size or file_id != logger_state.get("file_id"):
+                # First poll, or the log was truncated/replaced: rescan the recent tail.
+                offset = max(0, size - 256 * 1024)
+                logger_state["file_id"] = file_id
+                logger_state["partial"] = b""
+            stream.seek(offset, os.SEEK_SET)
+            appended = stream.read()
     except OSError:
         return False
+    logger_state["offset"] = offset + len(appended)
+    if not appended:
+        return False
 
-    plugin_lines = [
-        line
-        for line in log_tail.splitlines()
-        if "[sl.sensor.camera.plugin]" in line
-    ]
+    # Split on raw bytes so a multi-byte character is never cut in half; the
+    # unterminated last line is carried over to the next poll.
+    lines = (logger_state.get("partial", b"") + appended).split(b"\n")
+    logger_state["partial"] = lines.pop()
+    lines = [line.decode("utf-8", errors="replace") for line in lines]
+    plugin_lines = [line for line in lines if "[sl.sensor.camera.plugin]" in line]
     ready_line = next(
         (line for line in reversed(plugin_lines) if ZED_STREAM_READY_MESSAGE in line),
         None,

@@ -22,6 +22,7 @@ try:
         ZED_STREAM_TRANSPORT,
         validate_zed_stream_settings,
     )
+    from .policy_deploy.deploy_config import REMOTE_USD_PREFIXES
 except ImportError:  # Direct execution: ``python scripts/simulation_config.py``.
     from zed_isaac_sim import (  # type: ignore[no-redef]
         ZED_STREAM_FPS,
@@ -30,6 +31,7 @@ except ImportError:  # Direct execution: ``python scripts/simulation_config.py``
         ZED_STREAM_TRANSPORT,
         validate_zed_stream_settings,
     )
+    from policy_deploy.deploy_config import REMOTE_USD_PREFIXES  # type: ignore[no-redef]
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +45,22 @@ SCENE_ASSETS = frozenset(
 CONTROL_MODES = frozenset(("hold", "policy"))
 ARM_GAIN_PROFILES = frozenset(("identified", "train"))
 VIEWER_CAMERAS = frozenset(("scene", "zed", "zed_left", "zed_right", "wrist"))
+
+# Shared with the scene CLI defaults so YAML profiles and direct runs agree.
+# Topic names match the real Hesai driver and realsense2_camera contracts.
+XT32_DEFAULTS = {"topic": "/lidar_points", "frame_id": "hesai_lidar"}
+WRIST_CAMERA_DEFAULTS = {
+    "prim_path": "auto",
+    "width": 1280,
+    "height": 720,
+    "frame_skip_count": 0,
+    "frame_id": "wrist_camera_color_optical_frame",
+    "color_topic": "/wrist_camera/color/image_raw",
+    "color_info_topic": "/wrist_camera/color/camera_info",
+    "aligned_depth_topic": "/wrist_camera/aligned_depth_to_color/image_raw",
+    "aligned_depth_info_topic": "/wrist_camera/aligned_depth_to_color/camera_info",
+}
+WRIST_CAMERA_TOPIC_KEYS = ("color_topic", "color_info_topic", "aligned_depth_topic", "aligned_depth_info_topic")
 
 ROOT_KEYS = frozenset(
     (
@@ -153,7 +171,7 @@ def _resolve_path_or_url(value: Any, config_dir: Path, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SimulationConfigError(f"{label} must be a non-empty path or URL")
     text = value.strip()
-    if text.startswith(("http://", "https://", "omniverse://")):
+    if text.startswith(REMOTE_USD_PREFIXES):
         return text
     return _resolve_local_path(text, config_dir, label)
 
@@ -218,63 +236,22 @@ def config_arguments(config_path: str | Path) -> list[str]:
         raise SimulationConfigError("zed.save_frames cannot be true when zed.enabled is false")
 
     wrist_camera = profile["wrist_camera"]
-    wrist_camera_enabled = _bool(
-        wrist_camera, "enabled", False, "wrist_camera"
-    )
-    wrist_camera_prim_path = _string(
-        wrist_camera, "camera_prim_path", "auto", "wrist_camera"
-    )
-    wrist_camera_width = _int(wrist_camera, "width", 1280, "wrist_camera")
-    wrist_camera_height = _int(wrist_camera, "height", 720, "wrist_camera")
-    wrist_camera_frame_skip_count = _int(
-        wrist_camera, "frame_skip_count", 0, "wrist_camera"
-    )
-    wrist_camera_frame_id = _string(
-        wrist_camera,
-        "frame_id",
-        "wrist_camera_color_optical_frame",
-        "wrist_camera",
-    )
-    wrist_camera_color_topic = _string(
-        wrist_camera,
-        "color_topic",
-        "/wrist_camera/color/image_raw",
-        "wrist_camera",
-    )
-    wrist_camera_color_info_topic = _string(
-        wrist_camera,
-        "color_info_topic",
-        "/wrist_camera/color/camera_info",
-        "wrist_camera",
-    )
-    wrist_camera_depth_topic = _string(
-        wrist_camera,
-        "aligned_depth_topic",
-        "/wrist_camera/aligned_depth_to_color/image_raw",
-        "wrist_camera",
-    )
-    wrist_camera_depth_info_topic = _string(
-        wrist_camera,
-        "aligned_depth_info_topic",
-        "/wrist_camera/aligned_depth_to_color/camera_info",
-        "wrist_camera",
-    )
-    if wrist_camera_width <= 0 or wrist_camera_height <= 0:
+    wrist_camera_enabled = _bool(wrist_camera, "enabled", False, "wrist_camera")
+    # Every key maps onto a --wrist_camera_<key> scene argument.  The YAML
+    # spells the prim key ``camera_prim_path``; the scene flag is ``prim_path``.
+    wrist = {
+        key: (_int if isinstance(default, int) else _string)(
+            wrist_camera, "camera_prim_path" if key == "prim_path" else key, default, "wrist_camera"
+        )
+        for key, default in WRIST_CAMERA_DEFAULTS.items()
+    }
+    if wrist["width"] <= 0 or wrist["height"] <= 0:
         raise SimulationConfigError("wrist_camera width and height must be positive")
-    if wrist_camera_frame_skip_count < 0:
-        raise SimulationConfigError(
-            "wrist_camera.frame_skip_count must be non-negative"
-        )
-    if wrist_camera_frame_id.startswith("/"):
-        raise SimulationConfigError(
-            "wrist_camera.frame_id must not start with '/'"
-        )
-    wrist_camera_topics = (
-        wrist_camera_color_topic,
-        wrist_camera_color_info_topic,
-        wrist_camera_depth_topic,
-        wrist_camera_depth_info_topic,
-    )
+    if wrist["frame_skip_count"] < 0:
+        raise SimulationConfigError("wrist_camera.frame_skip_count must be non-negative")
+    if wrist["frame_id"].startswith("/"):
+        raise SimulationConfigError("wrist_camera.frame_id must not start with '/'")
+    wrist_camera_topics = [wrist[key] for key in WRIST_CAMERA_TOPIC_KEYS]
     if any(not topic.startswith("/") for topic in wrist_camera_topics):
         raise SimulationConfigError("all wrist_camera topics must be absolute")
     if len(set(wrist_camera_topics)) != len(wrist_camera_topics):
@@ -282,8 +259,8 @@ def config_arguments(config_path: str | Path) -> list[str]:
 
     xt32 = profile["xt32"]
     xt32_enabled = _bool(xt32, "enabled", True, "xt32")
-    xt32_topic = _string(xt32, "topic", "/lidar_points", "xt32")
-    xt32_frame_id = _string(xt32, "frame_id", "hesai_lidar", "xt32")
+    xt32_topic = _string(xt32, "topic", XT32_DEFAULTS["topic"], "xt32")
+    xt32_frame_id = _string(xt32, "frame_id", XT32_DEFAULTS["frame_id"], "xt32")
     xt32_debug = _bool(xt32, "show_debug_view", False, "xt32")
 
     ros = profile["ros"]
@@ -374,24 +351,11 @@ def config_arguments(config_path: str | Path) -> list[str]:
         xt32_topic,
         "--xt32_frame_id",
         xt32_frame_id,
-        "--wrist_camera_prim_path",
-        wrist_camera_prim_path,
-        "--wrist_camera_width",
-        str(wrist_camera_width),
-        "--wrist_camera_height",
-        str(wrist_camera_height),
-        "--wrist_camera_frame_skip_count",
-        str(wrist_camera_frame_skip_count),
-        "--wrist_camera_frame_id",
-        wrist_camera_frame_id,
-        "--wrist_camera_color_topic",
-        wrist_camera_color_topic,
-        "--wrist_camera_color_info_topic",
-        wrist_camera_color_info_topic,
-        "--wrist_camera_aligned_depth_topic",
-        wrist_camera_depth_topic,
-        "--wrist_camera_aligned_depth_info_topic",
-        wrist_camera_depth_info_topic,
+        *(
+            token
+            for key, value in wrist.items()
+            for token in (f"--wrist_camera_{key}", str(value))
+        ),
         "--ros2_domain_id",
         str(ros_domain_id),
         "--control_mode",
@@ -442,20 +406,9 @@ def config_arguments(config_path: str | Path) -> list[str]:
     return arguments
 
 
-def launch_arguments(config_path: str | Path, extra_arguments: Sequence[str] = ()) -> list[str]:
-    """Build the final scene argv; user CLI is deliberately appended last."""
-    return [*config_arguments(config_path), *extra_arguments]
-
-
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Simulation YAML profile.")
-    parser.add_argument(
-        "--emit",
-        choices=("lines", "null"),
-        default="lines",
-        help="Argument serialization for the shell wrapper.",
-    )
     return parser.parse_args(argv)
 
 
@@ -466,10 +419,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (FileNotFoundError, OSError, yaml.YAMLError, SimulationConfigError) as exc:
         print(f"simulation config error: {exc}", file=sys.stderr)
         return 2
-    separator = "\0" if args.emit == "null" else "\n"
-    sys.stdout.write(separator.join(arguments))
-    if arguments:
-        sys.stdout.write(separator)
+    # One argument per line; the shell wrapper reads them with mapfile.
+    sys.stdout.write("".join(f"{argument}\n" for argument in arguments))
     return 0
 
 

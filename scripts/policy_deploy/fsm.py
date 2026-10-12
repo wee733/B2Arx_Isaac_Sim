@@ -256,7 +256,9 @@ class ArmLocoState(BaseState):
         return self.arm_smooth.copy()
 
     def _build_obs(self, state, raw_action, phase_sincos, vx: float, vy: float, wz: float) -> np.ndarray:
-        projected_gravity = _projected_gravity_from_xyzw(np.asarray(state.quat_xyzw, dtype=np.float32))
+        projected_gravity = getattr(state, "projected_gravity", None)
+        if projected_gravity is None:
+            projected_gravity = projected_gravity_from_xyzw(state.quat_xyzw)
         return build_obs_termwise(
             self.rt.obs_terms,
             proj_grav_xy=projected_gravity[:2],
@@ -339,6 +341,23 @@ class CtrlFSM:
         self.current_name = name
         self.current.enter(plant)
 
+    def transition(
+        self,
+        plant,
+        command: ArmLocoCommand,
+        *,
+        tilt_rad: float | None = None,
+        stale: bool = False,
+    ) -> bool:
+        """Apply at most one state transition; return True if the state changed."""
+        previous = self.current_name
+        next_state = self._shared_check(command, tilt_rad, stale)
+        if next_state is None:
+            next_state = self.current.check_transition(command)
+        if next_state is not None:
+            self._transition_to(next_state, plant)
+        return self.current_name != previous
+
     def tick(
         self,
         plant,
@@ -348,17 +367,11 @@ class CtrlFSM:
         stale: bool = False,
         t: float | None = None,
     ) -> np.ndarray:
-        next_state = self._shared_check(command, tilt_rad, stale)
-        if next_state is not None:
-            self._transition_to(next_state, plant)
-            return self.current.run(plant, command, t=t)
-        next_state = self.current.check_transition(command)
-        if next_state is not None:
-            self._transition_to(next_state, plant)
+        self.transition(plant, command, tilt_rad=tilt_rad, stale=stale)
         return self.current.run(plant, command, t=t)
 
 
-def _projected_gravity_from_xyzw(quat_xyzw: np.ndarray) -> np.ndarray:
+def projected_gravity_from_xyzw(quat_xyzw: np.ndarray) -> np.ndarray:
     x, y, z, w = np.asarray(quat_xyzw, dtype=np.float32).reshape(4)
     rot = np.array(
         [
