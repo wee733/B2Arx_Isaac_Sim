@@ -15,6 +15,9 @@ ros_ws/log*/
 .remember/
 assets/container_storage/
 assets/paper_cup/
+assets/drone_dingdong/
+assets/landing_base/
+assets/jigoubi.usd
 assets.zip
 
 .DS_Store
