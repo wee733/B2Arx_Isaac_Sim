@@ -22,3 +22,14 @@ assets.zip
 
 .DS_Store
 Thumbs.db
+
+# Large assets and model weights are distributed outside git.
+models/**/*.pt
+models/**/*.onnx
+assets/wurenyuan/point_cloud.usdz
+assets/wurenyuan/rec_mesh4_28.usd
+assets/wurenyuan/rec_mesh4_28.ply
+
+# Kept locally only.
+docs/
+tests/
