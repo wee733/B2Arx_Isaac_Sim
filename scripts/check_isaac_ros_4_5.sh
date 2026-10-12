@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source=lib/common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+B2ARX_LOG_PREFIX="Isaac ROS preflight"
+B2ARX_PACKAGE_HINT="Install the official 4.5 dependencies and source their setup files."
+
 readonly ISAAC_ROS_VENV="/var/lib/isaac-ros-cli/isaac-ros"
 readonly ZED_SDK_ROOT="/usr/local/zed"
-
-fail() {
-  printf 'Isaac ROS preflight: ERROR: %s\n' "$*" >&2
-  exit 1
-}
 
 reject_private_path() {
   local path_value="$1"
@@ -20,14 +20,15 @@ reject_private_path() {
   esac
 }
 
-require_package() {
+# require_official_package NAME: print the package prefix after rejecting
+# retired private overlays.
+require_official_package() {
   local package_name="$1"
   local package_prefix
 
-  if ! package_prefix="$(ros2 pkg prefix "$package_name" 2>/dev/null)"; then
-    fail "ROS package '$package_name' is not discoverable. Install the official 4.5 dependencies and source their setup files."
-  fi
+  package_prefix="$(require_package "$package_name")" || exit 1
   reject_private_path "$package_prefix" "ROS package '$package_name' prefix"
+  printf '%s\n' "$package_prefix"
 }
 
 require_version_prefix() {
@@ -113,7 +114,7 @@ case "${VIRTUAL_ENV:-}" in
 esac
 
 if [[ -z "${ROS_DISTRO:-}" && -f /opt/ros/jazzy/setup.bash ]]; then
-  source /opt/ros/jazzy/setup.bash
+  source_setup /opt/ros/jazzy/setup.bash "ROS 2 Jazzy"
 fi
 
 for command_name in ros2 python3 ldd readelf realpath awk grep; do
@@ -160,8 +161,10 @@ required_packages=(
   zed_msgs
 )
 
+# Resolve each prefix once; the library checks below reuse them.
+declare -A package_prefixes=()
 for package_name in "${required_packages[@]}"; do
-  require_package "$package_name"
+  package_prefixes[$package_name]="$(require_official_package "$package_name")" || exit 1
 done
 
 if ! launch_utils_import_error="$(python3 -c 'import isaac_ros_launch_utils' 2>&1)"; then
@@ -218,16 +221,14 @@ fi
 zed_sdk_library="$ZED_SDK_ROOT/lib/libsl_zed.so"
 require_clean_library "$zed_sdk_library" "Host ZED SDK library"
 
-nitros_prefix="$(ros2 pkg prefix isaac_ros_nitros)"
-nitros_image_prefix="$(ros2 pkg prefix isaac_ros_nitros_image_type)"
-reject_private_path "$nitros_prefix" "isaac_ros_nitros prefix"
-reject_private_path "$nitros_image_prefix" "isaac_ros_nitros_image_type prefix"
+nitros_prefix="${package_prefixes[isaac_ros_nitros]}"
+nitros_image_prefix="${package_prefixes[isaac_ros_nitros_image_type]}"
 nitros_library="$nitros_prefix/lib/libisaac_ros_nitros.so"
 nitros_image_library="$nitros_image_prefix/lib/libisaac_ros_nitros_image_type.so"
 require_clean_library "$nitros_library" "Isaac ROS NITROS core library"
 require_clean_library "$nitros_image_library" "Isaac ROS NITROS image type library"
 
-zed_prefix="$(ros2 pkg prefix zed_components)"
+zed_prefix="${package_prefixes[zed_components]}"
 zed_library="$zed_prefix/lib/libzed_camera_component.so"
 require_clean_library "$zed_library" "ZED camera component"
 require_exact_linkage "$zed_library" "ZED camera component" \
@@ -240,7 +241,7 @@ if ! grep -a -F -q 'Transport summary: IPC=' "$zed_library"; then
   fail "ZED component does not contain the 5.4 transport check. Rebuild the pinned zed-ros2-wrapper v5.4.x source."
 fi
 
-nvblox_prefix="$(ros2 pkg prefix nvblox_ros)"
+nvblox_prefix="${package_prefixes[nvblox_ros]}"
 nvblox_library="$nvblox_prefix/lib/libnvblox_ros_lib.so"
 require_clean_library "$nvblox_library" "Isaac ROS Nvblox component"
 require_exact_linkage "$nvblox_library" "Isaac ROS Nvblox component" \

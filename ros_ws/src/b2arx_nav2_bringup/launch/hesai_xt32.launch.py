@@ -8,18 +8,16 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import OpaqueFunction
 from launch.conditions import IfCondition
-from launch.substitutions import EnvironmentVariable, LaunchConfiguration
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-
-def _is_true(value: str) -> bool:
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+from b2arx_nav2_bringup.launch_common import hesai_arguments, launch_config_bool
 
 
 def _validate_hesai_config(context):
-    if not _is_true(LaunchConfiguration("start_hesai").perform(context)):
+    if not launch_config_bool(context, "start_hesai"):
         return []
 
     config_path = LaunchConfiguration("hesai_config_file").perform(context).strip()
@@ -52,17 +50,7 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("start_hesai", default_value="false"),
-            DeclareLaunchArgument(
-                "hesai_config_file",
-                default_value=EnvironmentVariable(
-                    "HESAI_CONFIG_FILE", default_value=""
-                ),
-                description=(
-                    "Vendor XT32 YAML. The current real-robot configuration "
-                    "publishes /lidar_points in frame hesai_lidar."
-                ),
-            ),
+            *hesai_arguments(),
             OpaqueFunction(function=_validate_hesai_config),
             hesai_driver,
         ]

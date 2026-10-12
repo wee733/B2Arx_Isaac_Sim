@@ -5,14 +5,19 @@
 
 """D435i eye-in-hand profile around the existing ARX Isaac ROS workflow."""
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from nav2_common.launch import RewrittenYaml
+
+from b2arx_nav2_bringup.launch_common import (
+    include_launch,
+    package_file,
+    project_file,
+)
+
+
+MANIPULATION_PACKAGE = "isaac_ros_manipulation_arx_r5a_bringup"
 
 
 BEHAVIOR_CAMERA_FRAME_PATH = (
@@ -22,11 +27,6 @@ BEHAVIOR_CAMERA_FRAME_PATH = (
 
 
 def generate_launch_description() -> LaunchDescription:
-    adapter_share = get_package_share_directory("b2arx_nav2_bringup")
-    manipulation_share = get_package_share_directory(
-        "isaac_ros_manipulation_arx_r5a_bringup"
-    )
-
     behavior_tree_source_file = LaunchConfiguration("behavior_tree_source_file")
     # GetObjectPose has no Header. A wrist camera therefore must transform the
     # detection at image time and hand the behavior tree a base_link pose.
@@ -36,15 +36,11 @@ def generate_launch_description() -> LaunchDescription:
         convert_types=True,
     )
 
-    upstream_workflow = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                manipulation_share,
-                "launch",
-                "arx_r5a_apriltag_pick_and_place.launch.py",
-            )
+    upstream_workflow = include_launch(
+        package_file(
+            MANIPULATION_PACKAGE, "launch", "arx_r5a_apriltag_pick_and_place.launch.py"
         ),
-        launch_arguments={
+        {
             "use_sim_time": "False",
             "headless": LaunchConfiguration("headless"),
             "log_level": LaunchConfiguration("log_level"),
@@ -78,7 +74,7 @@ def generate_launch_description() -> LaunchDescription:
                 "camera_calibration_file"
             ),
             "behavior_tree_config_file": wrist_behavior_tree,
-        }.items(),
+        },
     )
 
     return LaunchDescription(
@@ -112,14 +108,12 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "camera_calibration_file",
-                default_value=os.path.join(
-                    adapter_share, "config", "wrist_d435i_eye_in_hand.yaml"
-                ),
+                default_value=project_file("config", "wrist_d435i_eye_in_hand.yaml"),
             ),
             DeclareLaunchArgument(
                 "behavior_tree_source_file",
-                default_value=os.path.join(
-                    manipulation_share,
+                default_value=package_file(
+                    MANIPULATION_PACKAGE,
                     "config",
                     "behavior_tree",
                     "arx_r5a_apriltag_behavior_tree.yaml",

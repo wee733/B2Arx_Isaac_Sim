@@ -9,17 +9,20 @@ No sensor or navigation algorithm lives here. The static ZED mount and the
 odometry lever-arm correction are deliberately built from the same YAML value.
 """
 
-import math
-import os
 from pathlib import Path
 
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import yaml
+
+from b2arx_nav2_bringup.launch_common import (
+    platform_adapter_arguments,
+    project_file,
+)
+from b2arx_nav2_bringup.odometry_adapter_core import unit_quaternion, vector3
 
 
 # Robot geometry:
@@ -43,13 +46,10 @@ def _frame(value, label: str) -> str:
     return value.strip()
 
 
-def _vector(value, length: int, label: str) -> tuple[float, ...]:
-    if not isinstance(value, (list, tuple)) or len(value) != length:
-        raise RuntimeError(f"{label} must contain {length} values")
-    result = tuple(float(item) for item in value)
-    if not all(math.isfinite(item) for item in result):
-        raise RuntimeError(f"{label} must contain finite values")
-    return result
+def _sequence(value, label: str) -> list:
+    if not isinstance(value, (list, tuple)):
+        raise RuntimeError(f"{label} must be a list")
+    return list(value)
 
 
 def _mount(config: dict, name: str) -> dict:
@@ -58,18 +58,24 @@ def _mount(config: dict, name: str) -> dict:
     unknown = sorted(set(mount) - allowed)
     if unknown:
         raise RuntimeError(f"Unknown mounts.{name} keys: {', '.join(unknown)}")
-    result = {
+    translation_label = f"mounts.{name}.translation"
+    quaternion_label = f"mounts.{name}.quaternion_xyzw"
+    translation = _sequence(mount.get("translation"), translation_label)
+    quaternion = _sequence(mount.get("quaternion_xyzw"), quaternion_label)
+    try:
+        vector3(translation, translation_label)
+        # Same validation as the odometry adapter, but a hand-written mount
+        # must already be unit length rather than being silently normalized.
+        unit_quaternion(quaternion, quaternion_label, require_unit=True)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    return {
         "parent_frame": _frame(mount.get("parent_frame"), f"mounts.{name}.parent_frame"),
         "child_frame": _frame(mount.get("child_frame"), f"mounts.{name}.child_frame"),
-        "translation": _vector(mount.get("translation"), 3, f"mounts.{name}.translation"),
-        "quaternion": _vector(
-            mount.get("quaternion_xyzw"), 4, f"mounts.{name}.quaternion_xyzw"
-        ),
+        # Keep the YAML values verbatim; TF and odometry receive the same input.
+        "translation": tuple(float(value) for value in translation),
+        "quaternion": tuple(float(value) for value in quaternion),
     }
-    quaternion_norm = math.sqrt(sum(value * value for value in result["quaternion"]))
-    if not math.isclose(quaternion_norm, 1.0, rel_tol=0.0, abs_tol=1.0e-6):
-        raise RuntimeError(f"mounts.{name}.quaternion_xyzw must be unit length")
-    return result
 
 
 def _static_transform(
@@ -112,7 +118,7 @@ def _static_transform(
     )
 
 
-def _configured_platform_actions(context, *, bringup_share: str):
+def _configured_platform_actions(context):
     config_path = Path(
         LaunchConfiguration("platform_config_file").perform(context)
     ).expanduser()
@@ -178,7 +184,7 @@ def _configured_platform_actions(context, *, bringup_share: str):
         condition=IfCondition(LaunchConfiguration("use_rviz")),
         arguments=[
             "-d",
-            os.path.join(bringup_share, "rviz", "b2arx_nvblox_nav2.rviz"),
+            project_file("rviz", "b2arx_nvblox_nav2.rviz"),
         ],
         parameters=[{"use_sim_time": use_sim_time}],
     )
@@ -186,27 +192,10 @@ def _configured_platform_actions(context, *, bringup_share: str):
 
 
 def generate_launch_description() -> LaunchDescription:
-    bringup_share = get_package_share_directory("b2arx_nav2_bringup")
-
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="true"),
-            DeclareLaunchArgument("use_rviz", default_value="true"),
-            DeclareLaunchArgument("start_odometry_adapter", default_value="true"),
-            DeclareLaunchArgument("publish_zed_mount_tf", default_value="true"),
-            DeclareLaunchArgument("publish_hesai_tf", default_value="true"),
-            DeclareLaunchArgument(
-                "platform_config_file",
-                default_value=os.path.join(
-                    bringup_share, "config", "platform_adapters.yaml"
-                ),
-                description=(
-                    "B2ARX frame, sensor mount, and odometry adapter contract."
-                ),
-            ),
-            OpaqueFunction(
-                function=_configured_platform_actions,
-                kwargs={"bringup_share": bringup_share},
-            ),
+            *platform_adapter_arguments(),
+            OpaqueFunction(function=_configured_platform_actions),
         ]
     )

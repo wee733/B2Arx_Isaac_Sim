@@ -10,9 +10,13 @@ from tf2_ros import TransformBroadcaster
 from .odometry_adapter_core import (
     DEFAULT_CAMERA_TO_BASE_QUATERNION,
     DEFAULT_CAMERA_TO_BASE_TRANSLATION,
+    CameraToBaseMount,
     OdometryState,
-    transform_camera_odometry_to_base,
 )
+
+
+# ZED odometry arrives at camera rate; repeated rejections must not flood logs.
+ERROR_LOG_THROTTLE_S = 2.0
 
 
 class OdometryAdapter(Node):
@@ -42,26 +46,13 @@ class OdometryAdapter(Node):
         self._base_child_frame_id = str(
             self.get_parameter("base_child_frame_id").value
         )
-        self._camera_to_base_translation = tuple(
-            float(value)
-            for value in self.get_parameter("camera_to_base_translation").value
-        )
-        self._camera_to_base_quaternion = tuple(
-            float(value)
-            for value in self.get_parameter("camera_to_base_quaternion").value
-        )
         self._publish_tf = bool(self.get_parameter("publish_tf").value)
 
-        # Validate the configured mount before accepting live odometry.
-        transform_camera_odometry_to_base(
-            OdometryState(
-                position=(0.0, 0.0, 0.0),
-                orientation_xyzw=(0.0, 0.0, 0.0, 1.0),
-                linear_velocity=(0.0, 0.0, 0.0),
-                angular_velocity=(0.0, 0.0, 0.0),
-            ),
-            self._camera_to_base_translation,
-            self._camera_to_base_quaternion,
+        # Validate and precompute the configured mount once, before accepting
+        # live odometry; each message then validates only its own fields.
+        self._mount = CameraToBaseMount.from_values(
+            self.get_parameter("camera_to_base_translation").value,
+            self.get_parameter("camera_to_base_quaternion").value,
         )
 
         self._publisher = self.create_publisher(
@@ -92,7 +83,8 @@ class OdometryAdapter(Node):
         if msg.child_frame_id != self._expected_camera_child_frame_id:
             self.get_logger().error(
                 "Ignoring odometry with child_frame_id=%r; expected %r"
-                % (msg.child_frame_id, self._expected_camera_child_frame_id)
+                % (msg.child_frame_id, self._expected_camera_child_frame_id),
+                throttle_duration_sec=ERROR_LOG_THROTTLE_S,
             )
             return
 
@@ -120,13 +112,12 @@ class OdometryAdapter(Node):
             ),
         )
         try:
-            base_state = transform_camera_odometry_to_base(
-                camera_state,
-                self._camera_to_base_translation,
-                self._camera_to_base_quaternion,
-            )
+            base_state = self._mount.apply(camera_state)
         except ValueError as exc:
-            self.get_logger().error(f"Ignoring invalid camera odometry: {exc}")
+            self.get_logger().error(
+                f"Ignoring invalid camera odometry: {exc}",
+                throttle_duration_sec=ERROR_LOG_THROTTLE_S,
+            )
             return
 
         output = Odometry()

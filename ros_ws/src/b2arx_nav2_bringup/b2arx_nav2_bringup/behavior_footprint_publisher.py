@@ -45,6 +45,15 @@ class BehaviorFootprintPublisher(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
+        # The geometry is static: build the message once and republish it.
+        # A zero timestamp is the standard tf2 request for the latest
+        # transform. Geometry is already expressed in base_link, so the
+        # transform is identity.
+        self._message = PolygonStamped()
+        self._message.header.frame_id = self._frame_id
+        self._message.polygon.points = [
+            Point32(x=float(x), y=float(y), z=0.0) for x, y in self._points
+        ]
         self._publisher = self.create_publisher(PolygonStamped, "footprint_out", qos)
         self._steady_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self._timer = self.create_timer(
@@ -59,14 +68,7 @@ class BehaviorFootprintPublisher(Node):
         )
 
     def _publish(self) -> None:
-        msg = PolygonStamped()
-        msg.header.frame_id = self._frame_id
-        # A zero timestamp is the standard tf2 request for the latest transform.
-        # Geometry is already expressed in base_link, so the transform is identity.
-        msg.polygon.points = [
-            Point32(x=float(x), y=float(y), z=0.0) for x, y in self._points
-        ]
-        self._publisher.publish(msg)
+        self._publisher.publish(self._message)
 
 
 def main(args=None) -> None:

@@ -4,6 +4,11 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/common.sh
+source "${repo_root}/scripts/lib/common.sh"
+B2ARX_LOG_PREFIX="run_isaac_ros"
+B2ARX_PACKAGE_HINT="Source the workspace that provides it, or rebuild with --build."
+
 ros_workspace="${repo_root}/ros_ws"
 mode="sim"
 build_overlay=false
@@ -18,7 +23,8 @@ Usage: ./scripts/run_isaac_ros.sh [sim|real] [OPTIONS] [LAUNCH_ARGUMENTS...]
 Options:
   --build       Rebuild b2arx_nav2_bringup before launching.
   --preflight   Run the Isaac ROS dependency check before launching.
-  --dry-run     Print the final ros2 launch command.
+  --dry-run     Print the setup files and final ros2 launch command without
+                sourcing, building, or launching anything.
   -h, --help    Show this help.
 
 Environment:
@@ -74,61 +80,71 @@ while (($#)); do
   esac
 done
 
-source_setup() {
-  local setup_file="$1"
-  local label="$2"
-  if [[ ! -f "${setup_file}" ]]; then
-    echo "Missing ${label} setup: ${setup_file}" >&2
-    return 1
+# setup FILE LABEL: source FILE, or only report it during --dry-run.
+setup() {
+  if [[ "${dry_run}" == true ]]; then
+    local state=""
+    [[ -f "$1" ]] || state=" (missing)"
+    printf '[DRY-RUN] source %s # %s%s\n' "$1" "$2" "${state}"
+    return 0
   fi
-  # setup.bash is an upstream-generated environment entrypoint.
-  # shellcheck disable=SC1090
-  set +u
-  source "${setup_file}"
-  set -u
+  source_setup "$1" "$2"
 }
 
-source_setup "/opt/ros/jazzy/setup.bash" "ROS 2 Jazzy"
-
 isaac_ros_ws="${ISAAC_ROS_WS:-${HOME}/workspaces/isaac_ros-dev}"
-source_setup "${isaac_ros_ws}/install/setup.bash" "official ZED/Isaac ROS workspace"
-
 hesai_ws="${HESAI_WS:-${HOME}/hesai_ws}"
+hesai_setup="${hesai_ws}/install/setup.bash"
+hesai_requested=false
+if start_hesai="$(launch_argument_value start_hesai "${launch_arguments[@]}")" &&
+   is_launch_true "${start_hesai}"; then
+  hesai_requested=true
+fi
+
+setup "/opt/ros/jazzy/setup.bash" "ROS 2 Jazzy"
+setup "${isaac_ros_ws}/install/setup.bash" "official ZED/Isaac ROS workspace"
+
+use_hesai_ws=false
 if [[ "${mode}" == "real" ]]; then
-  if [[ -f "${hesai_ws}/install/setup.bash" ]]; then
-    source_setup "${hesai_ws}/install/setup.bash" "official Hesai workspace"
-  elif printf '%s\n' "${launch_arguments[@]}" | grep -Fxq 'start_hesai:=true'; then
+  if [[ -f "${hesai_setup}" ]]; then
+    use_hesai_ws=true
+  elif [[ "${hesai_requested}" == true ]]; then
     echo "Real XT32 was requested, but the Hesai workspace is missing: ${hesai_ws}" >&2
-    exit 2
+    [[ "${dry_run}" == true ]] || exit 2
+    use_hesai_ws=true
   fi
+fi
+if [[ "${use_hesai_ws}" == true ]]; then
+  setup "${hesai_setup}" "official Hesai workspace"
 fi
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-23}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 export ROS_AUTOMATIC_DISCOVERY_RANGE="${ROS_AUTOMATIC_DISCOVERY_RANGE:-SUBNET}"
 
+build_command=(colcon build --symlink-install --packages-select b2arx_nav2_bringup)
 if [[ "${build_overlay}" == true || ! -f "${ros_workspace}/install/local_setup.bash" ]]; then
-  command -v colcon >/dev/null 2>&1 || {
-    echo "colcon is required to build ${ros_workspace}." >&2
-    exit 2
-  }
-  (
-    cd "${ros_workspace}"
-    colcon build --symlink-install --packages-select b2arx_nav2_bringup
-  )
+  if [[ "${dry_run}" == true ]]; then
+    printf '[DRY-RUN] (cd %q &&' "${ros_workspace}"
+    printf ' %q' "${build_command[@]}"
+    printf ')\n'
+  else
+    command -v colcon >/dev/null 2>&1 || {
+      echo "colcon is required to build ${ros_workspace}." >&2
+      exit 2
+    }
+    (cd "${ros_workspace}" && "${build_command[@]}")
+  fi
 fi
 
-source_setup "${ros_workspace}/install/local_setup.bash" "B2ARX overlay"
+setup "${ros_workspace}/install/local_setup.bash" "B2ARX overlay"
 
-for package_name in zed_wrapper nvblox_examples_bringup nav2_bringup b2arx_nav2_bringup; do
-  ros2 pkg prefix "${package_name}" >/dev/null 2>&1 || {
-    echo "Required ROS package is not discoverable: ${package_name}" >&2
-    exit 2
-  }
-done
-
-if [[ "${run_preflight}" == true ]]; then
-  "${repo_root}/scripts/check_isaac_ros_4_5.sh"
+if [[ "${dry_run}" != true ]]; then
+  require_packages zed_wrapper nvblox_examples_bringup nav2_bringup b2arx_nav2_bringup
+  if [[ "${run_preflight}" == true ]]; then
+    "${repo_root}/scripts/check_isaac_ros_4_5.sh"
+  fi
+elif [[ "${run_preflight}" == true ]]; then
+  print_dry_run "${repo_root}/scripts/check_isaac_ros_4_5.sh"
 fi
 
 launch_file="bringup_${mode}.launch.py"
@@ -140,14 +156,12 @@ command=(
 
 echo "[INFO] mode=${mode} ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
 echo "[INFO] Isaac ROS/ZED workspace: ${isaac_ros_ws}"
-if [[ "${mode}" == "real" && -f "${hesai_ws}/install/setup.bash" ]]; then
+if [[ "${use_hesai_ws}" == true ]]; then
   echo "[INFO] Hesai workspace: ${hesai_ws}"
 fi
 
 if [[ "${dry_run}" == true ]]; then
-  printf '[DRY-RUN]'
-  printf ' %q' "${command[@]}"
-  printf '\n'
+  print_dry_run "${command[@]}"
   exit 0
 fi
 

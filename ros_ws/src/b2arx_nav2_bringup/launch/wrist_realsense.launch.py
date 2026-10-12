@@ -5,20 +5,20 @@
 
 """Optional physical wrist D435i adapter around the official RealSense launch."""
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration
+
+from b2arx_nav2_bringup.launch_common import (
+    BOOLEAN_CHOICES,
+    include_launch,
+    package_file,
+    project_file,
+)
 
 
 def generate_launch_description() -> LaunchDescription:
-    bringup_share = get_package_share_directory("b2arx_nav2_bringup")
-    realsense_share = get_package_share_directory("realsense2_camera")
-
     start_wrist_realsense = LaunchConfiguration("start_wrist_realsense")
     device_type = LaunchConfiguration("device_type")
     serial_no = LaunchConfiguration("serial_no")
@@ -31,12 +31,9 @@ def generate_launch_description() -> LaunchDescription:
     # internal TF tree stay owned by the upstream RealSense driver. Keeping the
     # namespace empty and using wrist_camera as the node name intentionally
     # produces one prefix: /wrist_camera/..., not /wrist_camera/wrist_camera/....
-    official_realsense = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(realsense_share, "launch", "rs_launch.py")
-        ),
-        condition=IfCondition(start_wrist_realsense),
-        launch_arguments={
+    official_realsense = include_launch(
+        package_file("realsense2_camera", "launch", "rs_launch.py"),
+        {
             "camera_namespace": "",
             "camera_name": "wrist_camera",
             "serial_no": serial_no,
@@ -52,7 +49,8 @@ def generate_launch_description() -> LaunchDescription:
             "publish_tf": "true",
             "initial_reset": initial_reset,
             "log_level": log_level,
-        }.items(),
+        },
+        condition=IfCondition(start_wrist_realsense),
     )
 
     return LaunchDescription(
@@ -60,7 +58,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "start_wrist_realsense",
                 default_value="false",
-                choices=["true", "false"],
+                choices=list(BOOLEAN_CHOICES),
             ),
             DeclareLaunchArgument(
                 "device_type",
@@ -79,21 +77,19 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "realsense_config_file",
-                default_value=os.path.join(
-                    bringup_share, "config", "wrist_realsense_d435i.yaml"
-                ),
+                default_value=project_file("config", "wrist_realsense_d435i.yaml"),
                 description="Flat parameter dictionary consumed by official rs_launch.py.",
             ),
             DeclareLaunchArgument(
                 "enable_imu",
                 default_value="true",
-                choices=["true", "false"],
+                choices=list(BOOLEAN_CHOICES),
                 description="Enable both D435i gyro and accelerometer streams.",
             ),
             DeclareLaunchArgument(
                 "initial_reset",
                 default_value="false",
-                choices=["true", "false"],
+                choices=list(BOOLEAN_CHOICES),
             ),
             DeclareLaunchArgument("log_level", default_value="info"),
             official_realsense,

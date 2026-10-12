@@ -1,0 +1,44 @@
+# XT32 obstacle-source overlay for b2arx_nav2.yaml.
+#
+# isaac_ros_nav2.launch.py navigation_mode:=lidar deep-merges this file over
+# b2arx_nav2.yaml (nested mappings merge, other values replace, null deletes).
+# Planner, controller, safety adapters, frames, and robot footprint therefore
+# come from the single base file. Only the two costmap observation layers
+# differ: this profile consumes the official Hesai/Isaac Sim PointCloud2
+# interface directly and does not load Nvblox or its Nav2 costmap plugin.
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      plugins: ["obstacle_layer", "inflation_layer"]
+      nvblox_layer: null
+      obstacle_layer: &xt32_obstacle_layer
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        footprint_clearing_enabled: true
+        combination_method: 1
+        observation_sources: xt32
+        xt32:
+          topic: /lidar_points
+          sensor_frame: hesai_lidar
+          data_type: "PointCloud2"
+          marking: true
+          clearing: true
+          # map z=0 currently follows the initial ZED pose, about 0.63 m above
+          # the simulated floor. Keep obstacles roughly 0.13 m and taller while
+          # rejecting the ground band. Recheck this threshold on the real robot.
+          min_obstacle_height: -0.50
+          max_obstacle_height: 1.50
+          obstacle_min_range: 0.30
+          obstacle_max_range: 20.0
+          raytrace_min_range: 0.20
+          raytrace_max_range: 25.0
+          observation_persistence: 0.0
+          expected_update_rate: 0.0
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins: ["obstacle_layer", "inflation_layer"]
+      nvblox_layer: null
+      obstacle_layer: *xt32_obstacle_layer

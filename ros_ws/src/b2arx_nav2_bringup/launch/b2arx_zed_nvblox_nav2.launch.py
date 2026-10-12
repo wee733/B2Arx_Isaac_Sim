@@ -5,22 +5,10 @@
 
 """Compatibility alias for the original B2ARX simulation launch command."""
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+
+from b2arx_nav2_bringup.launch_common import include_project_launch
 
 
 def generate_launch_description() -> LaunchDescription:
-    bringup_share = get_package_share_directory("b2arx_nav2_bringup")
-    return LaunchDescription(
-        [
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    os.path.join(bringup_share, "launch", "bringup_sim.launch.py")
-                )
-            )
-        ]
-    )
+    return LaunchDescription([include_project_launch("bringup_sim.launch.py")])

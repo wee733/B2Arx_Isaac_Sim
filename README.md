@@ -153,14 +153,14 @@ watchdog 和 `/b2/odom` 接口保持完全一致：
 ./scripts/run_isaac_ros.sh sim navigation_mode:=lidar
 ```
 
-也可以直接调用对应的算法入口：
+也可以直接调用共用的算法入口：
 
 ```bash
 # 深度模式
-ros2 launch b2arx_nav2_bringup isaac_ros_nav2.launch.py sensor_mode:=sim
+ros2 launch b2arx_nav2_bringup isaac_ros_nav2.launch.py sensor_mode:=sim navigation_mode:=depth
 
 # 雷达模式
-ros2 launch b2arx_nav2_bringup b2arx_xt32_nav2.launch.py sensor_mode:=sim
+ros2 launch b2arx_nav2_bringup isaac_ros_nav2.launch.py sensor_mode:=sim navigation_mode:=lidar
 ```
 
 雷达模式当前仍默认启动 ZED，但只用其 VIO 提供 `/b2/odom` 和
@@ -183,7 +183,7 @@ ros2 topic info /lidar_points --verbose
 ```
 
 XT32 的高度和距离过滤位于
-`ros_ws/src/b2arx_nav2_bringup/config/b2arx_nav2_xt32.yaml`；真机首次运行应根据地面
+`ros_ws/src/b2arx_nav2_bringup/config/b2arx_nav2_xt32_overlay.yaml`；真机首次运行应根据地面
 点云的实际高度复核 `min_obstacle_height` / `max_obstacle_height`。该模式是实时
 marking/clearing costmap，不会自动生成持久化 SLAM 地图。
 
@@ -298,8 +298,7 @@ ros_ws/src/b2arx_nav2_bringup/launch/
 ├── nav2.launch.py                   官方 Nav2 include + B2 速度安全节点
 ├── platform_adapters.launch.py      配置化 B2ARX TF、odom adapter 和 RViz
 ├── manipulation_wrist_d435i.launch.py  现有 ARX manipulation 的腕部 profile
-├── isaac_ros_nav2.launch.py         共用算法总入口
-├── b2arx_xt32_nav2.launch.py        XT32 ObstacleLayer 独立导航入口
+├── isaac_ros_nav2.launch.py         共用算法总入口（navigation_mode:=depth|lidar）
 ├── bringup_sim.launch.py            仿真 profile
 ├── bringup_real.launch.py           真机 profile
 └── b2arx_zed_nvblox_nav2.launch.py  旧入口兼容层
@@ -320,9 +319,11 @@ ros2 launch b2arx_nav2_bringup manipulation_wrist_d435i.launch.py
 launch 直接启动各个进程，不依赖 `/nvblox_container`。只有在外部容器已经
 存在时才显式使用 `use_composition:=true container_name:=...`。
 
-总入口 `isaac_ros_nav2.launch.py` 固定让 Nav2 composition 复用官方 Nvblox
-创建的唯一容器，因此 `start_nav2:=true` 必须同时保持
+总入口 `isaac_ros_nav2.launch.py` 在 `navigation_mode:=depth` 时让 Nav2
+composition 复用官方 Nvblox 创建的唯一容器，因此 `start_nav2:=true` 必须同时保持
 `start_nvblox:=true`；不满足时会在启动阶段直接报错，而不会等待不存在的容器。
+`navigation_mode:=lidar` 不启动 Nvblox，Nav2 以独立进程运行。各 launch 共用的
+参数声明、include 和布尔解析位于 Python 包 `b2arx_nav2_bringup/launch_common.py`。
 
 ## 配置入口
 
@@ -335,7 +336,7 @@ launch 直接启动各个进程，不依赖 `/nvblox_container`。只有在外�
 | `ros_ws/src/b2arx_nav2_bringup/config/zedx_nvblox_release_4_5.yaml` | ZED 项目覆盖 |
 | `ros_ws/src/b2arx_nav2_bringup/config/nvblox_b2arx.yaml` | Nvblox 项目覆盖 |
 | `ros_ws/src/b2arx_nav2_bringup/config/b2arx_nav2.yaml` | Nav2、costmap、watchdog 和 footprint |
-| `ros_ws/src/b2arx_nav2_bringup/config/b2arx_nav2_xt32.yaml` | XT32 `/lidar_points` Nav2 ObstacleLayer 模式；非 costmap 参数与深度模式保持一致 |
+| `ros_ws/src/b2arx_nav2_bringup/config/b2arx_nav2_xt32_overlay.yaml` | XT32 `/lidar_points` Nav2 ObstacleLayer 模式；仅覆盖两个 costmap 的障碍层，启动时叠加到 `b2arx_nav2.yaml` |
 | `ros_ws/src/b2arx_nav2_bringup/config/platform_adapters.yaml` | ZED/XT32 安装外参、frame 和 odometry adapter |
 | `ros_ws/src/b2arx_nav2_bringup/config/wrist_realsense_d435i.yaml` | 官方 RealSense 真机流参数 |
 | `config/arx_r5a_d543if_eih.calib` | easy_handeye 原始测量结果，保留原格式 |

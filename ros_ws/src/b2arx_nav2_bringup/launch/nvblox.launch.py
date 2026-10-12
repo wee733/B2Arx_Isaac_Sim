@@ -5,26 +5,29 @@
 
 """B2ARX parameters around the official Isaac ROS Nvblox launch."""
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     GroupAction,
-    IncludeLaunchDescription,
     OpaqueFunction,
     Shutdown,
 )
 from launch.conditions import IfCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     EqualsSubstitution,
     IfElseSubstitution,
     LaunchConfiguration,
 )
 from launch_ros.actions import Node, SetParameter, SetParametersFromFile
-from nvblox_ros_python_utils.nvblox_constants import NVBLOX_CONTAINER_NAME
+
+from b2arx_nav2_bringup.launch_common import (
+    NAV2_PARAMS_FILE,
+    include_launch,
+    launch_config_bool,
+    nvblox_container_name,
+    package_file,
+    project_file,
+)
 
 
 NVBLOX_ZED_LIDAR_ERROR = (
@@ -35,30 +38,15 @@ NVBLOX_ZED_LIDAR_ERROR = (
 )
 
 
-def _is_true(value: str) -> bool:
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _validate_sensor_contract(context):
-    if not _is_true(LaunchConfiguration("start_nvblox").perform(context)):
+    if not launch_config_bool(context, "start_nvblox"):
         return []
-
-    raw_value = LaunchConfiguration("use_lidar_in_nvblox").perform(context)
-    normalized_value = raw_value.strip().lower()
-    if _is_true(raw_value):
+    if launch_config_bool(context, "use_lidar_in_nvblox"):
         raise RuntimeError(NVBLOX_ZED_LIDAR_ERROR)
-    if normalized_value not in {"0", "false", "no", "off"}:
-        raise ValueError(
-            "use_lidar_in_nvblox must be a boolean value, got "
-            f"{raw_value!r}."
-        )
     return []
 
 
 def generate_launch_description() -> LaunchDescription:
-    bringup_share = get_package_share_directory("b2arx_nav2_bringup")
-    nvblox_examples_share = get_package_share_directory("nvblox_examples_bringup")
-
     start_nvblox = LaunchConfiguration("start_nvblox")
     use_sim_time = LaunchConfiguration("use_sim_time")
     container_name = LaunchConfiguration("container_name")
@@ -69,16 +57,11 @@ def generate_launch_description() -> LaunchDescription:
     use_lidar = LaunchConfiguration("use_lidar_in_nvblox")
     nvblox_params_file = LaunchConfiguration("nvblox_params_file")
 
-    official_nvblox = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                nvblox_examples_share,
-                "launch",
-                "perception",
-                "nvblox.launch.py",
-            )
+    official_nvblox = include_launch(
+        package_file(
+            "nvblox_examples_bringup", "launch", "perception", "nvblox.launch.py"
         ),
-        launch_arguments={
+        {
             "mode": "static",
             "camera": zed_camera_model,
             "num_cameras": "1",
@@ -96,7 +79,7 @@ def generate_launch_description() -> LaunchDescription:
                 if_value="True",
                 else_value="False",
             ),
-        }.items(),
+        },
     )
 
     # The upstream launch exposes its standard multithreaded container but not
@@ -124,7 +107,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("start_nvblox", default_value="true"),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument(
-                "container_name", default_value=NVBLOX_CONTAINER_NAME
+                "container_name", default_value=nvblox_container_name()
             ),
             DeclareLaunchArgument(
                 "container_type",
@@ -134,9 +117,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("log_level", default_value="info"),
             DeclareLaunchArgument(
                 "container_params_file",
-                default_value=os.path.join(
-                    bringup_share, "config", "b2arx_nav2.yaml"
-                ),
+                default_value=project_file("config", NAV2_PARAMS_FILE),
                 description=(
                     "Parameters injected into the sole shared container before "
                     "Nvblox and composed Nav2 are loaded."
@@ -157,9 +138,7 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "nvblox_params_file",
-                default_value=os.path.join(
-                    bringup_share, "config", "nvblox_b2arx.yaml"
-                ),
+                default_value=project_file("config", "nvblox_b2arx.yaml"),
                 description=(
                     "Robot-specific parameters applied in the scope of the "
                     "official Isaac ROS Nvblox launch."
