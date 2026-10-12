@@ -50,10 +50,6 @@ class KeyboardCommandSource(CommandSource):
         self._device.reset()
         self._latch.reset()
 
-    def is_stale(self, now_s: float | None = None) -> bool:
-        del now_s
-        return False
-
     def close(self) -> None:
         # Se2Keyboard unsubscribes its keyboard sub in __del__.
         self._device = None
@@ -125,10 +121,6 @@ class GamepadCommandSource(CommandSource):
         self._device.reset()
         self._latch.reset()
         self._mapper.reset()
-
-    def is_stale(self, now_s: float | None = None) -> bool:
-        del now_s
-        return False
 
     def close(self) -> None:
         if getattr(self, "_sub", None) is not None:

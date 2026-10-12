@@ -295,19 +295,17 @@ class B2ArxIsaacPolicyController:
         return cmd
 
     def _apply_gains_for_state(self) -> None:
-        if self.fsm.current_name == "ArmLoco":
-            kp = self.runtime.stiffness.copy()
-            kd = self.runtime.damping.copy()
-        elif self.fsm.current_name == "Passive":
+        if self.fsm.current_name == "Passive":
             kp = np.zeros(18, dtype=np.float32)
             kd = np.full(18, PassiveState.kd, dtype=np.float32)
         else:
             kp = self.runtime.stiffness.copy()
             kd = self.runtime.damping.copy()
-            # Legs use the stand gains; the arm keeps its policy gains as a soft
-            # position hold, mirroring the real robot's external arm controller.
-            kp[:12] = FixStandState.kp
-            kd[:12] = FixStandState.kd
+            if self.fsm.current_name != "ArmLoco":
+                # Legs use the stand gains; the arm keeps its policy gains as a soft
+                # position hold, mirroring the real robot's external arm controller.
+                kp[:12] = FixStandState.kp
+                kd[:12] = FixStandState.kd
         if not np.allclose(kp, self._last_kp) or not np.allclose(kd, self._last_kd):
             self._write_actuator_gains(kp, kd)
             self._last_kp = kp.copy()

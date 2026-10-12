@@ -32,10 +32,6 @@ _HELD_ALIASES = {
     "DPAD_DOWN": "dpad_down",
     "DPAD_RIGHT": "dpad_right",
     "DPAD_LEFT": "dpad_left",
-    "D_PAD_UP": "dpad_up",
-    "D_PAD_DOWN": "dpad_down",
-    "D_PAD_RIGHT": "dpad_right",
-    "D_PAD_LEFT": "dpad_left",
     "LEFT_BUMPER": "left_bumper",
     "LEFT_SHOULDER": "left_bumper",
     "LB": "left_bumper",
@@ -48,35 +44,36 @@ _HELD_ALIASES = {
     "RT": "right_trigger",
 }
 
+_NORMALIZED_ALIASES = {
+    "LEFTSTICK": "LEFT_STICK",
+    "LEFTTHUMB": "LEFT_THUMB",
+    "LEFTSTICKBUTTON": "LEFT_STICK",
+    "RIGHTSTICK": "RIGHT_STICK",
+    "RIGHTTHUMB": "RIGHT_THUMB",
+    "RIGHTSTICKBUTTON": "RIGHT_STICK",
+    "DPADUP": "DPAD_UP",
+    "DPADDOWN": "DPAD_DOWN",
+    "DPADRIGHT": "DPAD_RIGHT",
+    "DPADLEFT": "DPAD_LEFT",
+    "DUP": "DPAD_UP",
+    "DDOWN": "DPAD_DOWN",
+    "DRIGHT": "DPAD_RIGHT",
+    "DLEFT": "DPAD_LEFT",
+    "LEFTBUMPER": "LEFT_BUMPER",
+    "LEFTSHOULDER": "LEFT_SHOULDER",
+    "RIGHTBUMPER": "RIGHT_BUMPER",
+    "RIGHTSHOULDER": "RIGHT_SHOULDER",
+    "LEFTTRIGGER": "LEFT_TRIGGER",
+    "RIGHTTRIGGER": "RIGHT_TRIGGER",
+}
+
 
 def _norm(input_name: str) -> str:
     raw = str(input_name).upper()
     compact = re.sub(r"[^A-Z0-9]+", "", raw)
     if compact.startswith("BUTTON") and len(compact) == 7:
         return compact[-1]
-    aliases = {
-        "LEFTSTICK": "LEFT_STICK",
-        "LEFTTHUMB": "LEFT_THUMB",
-        "LEFTSTICKBUTTON": "LEFT_STICK",
-        "RIGHTSTICK": "RIGHT_STICK",
-        "RIGHTTHUMB": "RIGHT_THUMB",
-        "RIGHTSTICKBUTTON": "RIGHT_STICK",
-        "DPADUP": "DPAD_UP",
-        "DPADDOWN": "DPAD_DOWN",
-        "DPADRIGHT": "DPAD_RIGHT",
-        "DPADLEFT": "DPAD_LEFT",
-        "DUP": "DPAD_UP",
-        "DDOWN": "DPAD_DOWN",
-        "DRIGHT": "DPAD_RIGHT",
-        "DLEFT": "DPAD_LEFT",
-        "LEFTBUMPER": "LEFT_BUMPER",
-        "LEFTSHOULDER": "LEFT_SHOULDER",
-        "RIGHTBUMPER": "RIGHT_BUMPER",
-        "RIGHTSHOULDER": "RIGHT_SHOULDER",
-        "LEFTTRIGGER": "LEFT_TRIGGER",
-        "RIGHTTRIGGER": "RIGHT_TRIGGER",
-    }
-    return aliases.get(compact, compact)
+    return _NORMALIZED_ALIASES.get(compact, compact)
 
 
 @dataclass

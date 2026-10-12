@@ -96,7 +96,7 @@ def build_obs_termwise(
         if name not in raw:
             raise KeyError(f"Unsupported observation term: {name}")
         parts.append(raw[name] * np.asarray(scale, dtype=np.float32))
-    return np.concatenate(parts).astype(np.float32)
+    return np.concatenate(parts)
 
 
 class DeployPolicyRuntime:
