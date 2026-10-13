@@ -1,5 +1,15 @@
 # B2ARX Isaac Sim / Isaac ROS Bringup
 
+![Robotics: B2ARX](https://img.shields.io/badge/Robotics-B2ARX-475569)
+![Isaac Sim: 5.1](https://img.shields.io/badge/Isaac_Sim-5.1-76B900)
+![Isaac ROS: 4.5](https://img.shields.io/badge/Isaac_ROS-4.5-76B900)
+![ROS 2: Jazzy](https://img.shields.io/badge/ROS_2-Jazzy-2496ED)
+![Navigation: Nav2](https://img.shields.io/badge/Navigation-Nav2-7B42BC)
+
+![B2ARX 仓库导航与传感器项目示意图](assets/readme/b2arx-project-cover.png)
+
+*AI 生成项目示意图：B2 + ARX R5、传感器与仓库导航场景。*
+
 这是 B2 机器狗 + ARX R5 机械臂的统一仿真、真机传感器和 Isaac ROS 算法编排仓库。
 
 项目定位不是复制 ZED、Hesai、Nvblox、Nav2 或 Isaac ROS 的实现，而是维护：
@@ -557,6 +567,12 @@ assets/my_B2Arx/my_b2arx/my_robot.usd
 ```
 
 在 Isaac Sim GUI 中修改后保存到该 USD 或另存新文件，再修改 profile 的 `robot_usd`；不要在运行脚本中重新拼装传感器资产。
+
+## README 展示约定
+
+- 标题后先放 GitHub 彩色徽章，标明项目领域、主要技术栈和适用版本。
+- 在徽章后、正文前放一张代表性图片。优先选实际结果图，也可使用中间过程图，并说明阶段和实际验证范围；没有合适的实图时，可生成项目示意图，明确标注来源和用途。
+- 正文按需放有代表性的过程图，紧邻对应步骤，配简短说明。精选展示图片使用仓库内相对路径，集中放在 `assets/readme/`；完整运行输出仍保留在各自的输出目录。
 
 ## 相关文档
 

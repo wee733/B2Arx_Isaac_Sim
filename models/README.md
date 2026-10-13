@@ -1,5 +1,13 @@
 # Policy Models
 
+![Robotics: B2ARX](https://img.shields.io/badge/Robotics-B2ARX-475569)
+![Inference: ONNX](https://img.shields.io/badge/Inference-ONNX-005CED)
+![Policy: Deployment](https://img.shields.io/badge/Policy-Deployment-7B42BC)
+
+![B2ARX project concept illustration](../assets/readme/b2arx-project-cover.png)
+
+*AI-generated project concept illustration.*
+
 Each deployable policy lives in its own directory and contains the complete
 runtime bundle:
 
